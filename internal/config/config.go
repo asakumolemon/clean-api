@@ -17,9 +17,13 @@ type Config struct {
 	DefaultTimeoutSec int    `json:"default_timeout_seconds"` // 上游请求默认超时，默认 120
 	AdminUsername     string `json:"admin_username"`          // 首次启动创建的管理员用户名
 	AdminPassword     string `json:"admin_password"`          // 首次启动创建的管理员密码（建议用环境变量，勿入库）
-	EncKey            string `json:"enc_key"`                 // 上游 API key 的 AES-GCM 加密密钥（M2 起使用）
-	SessionSecure     bool   `json:"session_secure"`          // 管理面 cookie 加 Secure（仅 HTTPS 时开启，默认关）
-	RoutingStrategy   string `json:"routing_strategy"`        // 模型→渠道选择策略：random|round_robin（默认 random，M3 起使用）
+	EncKey            string            `json:"enc_key"`                 // 上游 API key 的 AES-GCM 加密密钥（M2 起使用）
+	SessionSecure     bool              `json:"session_secure"`          // 管理面 cookie 加 Secure（仅 HTTPS 时开启，默认关）
+	RoutingStrategy   string            `json:"routing_strategy"`        // 模型→渠道选择策略：random|round_robin（默认 random，M3 起使用）
+	HealthCheckEnabled bool             `json:"health_check_enabled"`    // 渠道健康检查开关（默认开，M5 起使用）
+	HealthCheckIntervalSec int          `json:"health_check_interval_seconds"` // 健康检查间隔秒，默认 300
+	HealthCheckMaxFailures int          `json:"health_check_max_failures"`     // 连续失败 N 次标记 down，默认 3
+	ModelRedirects    map[string]string `json:"model_redirects"`         // 全局模型重定向：请求模型名 → 实际模型名（M5 起使用）
 }
 
 // Load 从 JSON 文件读取配置并叠加默认值与环境变量覆盖。
@@ -61,6 +65,12 @@ func (c *Config) setDefaults() {
 	if c.RoutingStrategy == "" {
 		c.RoutingStrategy = "random"
 	}
+	if c.HealthCheckIntervalSec == 0 {
+		c.HealthCheckIntervalSec = 300
+	}
+	if c.HealthCheckMaxFailures == 0 {
+		c.HealthCheckMaxFailures = 3
+	}
 }
 
 // applyEnv 用 GATEWAY_* 环境变量覆盖配置项。
@@ -92,5 +102,14 @@ func (c *Config) applyEnv() {
 	}
 	if v := get("ROUTING_STRATEGY"); v != "" {
 		c.RoutingStrategy = v
+	}
+	if v := get("HEALTH_CHECK_ENABLED"); v != "" {
+		c.HealthCheckEnabled = v == "1" || v == "true"
+	}
+	if v := get("HEALTH_CHECK_INTERVAL_SECONDS"); v != "" {
+		fmt.Sscanf(v, "%d", &c.HealthCheckIntervalSec)
+	}
+	if v := get("HEALTH_CHECK_MAX_FAILURES"); v != "" {
+		fmt.Sscanf(v, "%d", &c.HealthCheckMaxFailures)
 	}
 }

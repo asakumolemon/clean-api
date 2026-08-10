@@ -1,12 +1,14 @@
 package web
 
 import (
+	"context"
 	"net/http"
 	"strconv"
 
 	"github.com/go-chi/chi/v5"
 
 	"api-gateway/internal/auth"
+	"api-gateway/internal/store"
 )
 
 // loginPage GET /admin/login
@@ -68,13 +70,33 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 	tokens, _ := s.store.CountTokens(ctx)
 	channels, _ := s.store.CountChannels(ctx)
 	models, _ := s.store.CountModels(ctx)
+	logs, _ := s.store.ListRequestLogs(ctx, store.LogFilter{}, 8, 0)
+	chNames := map[int64]string{}
+	for _, c := range channelsList(ctx, s) {
+		chNames[c.ID] = c.Name
+	}
+	views := make([]logView, 0, len(logs))
+	for _, l := range logs {
+		views = append(views, logView{
+			RequestLog:  l,
+			ChannelName: chNames[l.ChannelID],
+			StatusText:  statusLabel(l.Status),
+		})
+	}
 	s.render(w, "dashboard.html", baseData("仪表盘 · 智能 API 网关", "dashboard", map[string]any{
 		"Flash":    s.readFlash(w, r),
 		"Users":    users,
 		"Tokens":   tokens,
 		"Channels": channels,
 		"Models":   models,
+		"RecentLogs": views,
 	}))
+}
+
+// channelsList 渠道列表（忽略错误，供各页拼渠道名映射）。
+func channelsList(ctx context.Context, s *Server) []store.Channel {
+	list, _ := s.store.ListChannels(ctx)
+	return list
 }
 
 // tokensPage GET /admin/tokens

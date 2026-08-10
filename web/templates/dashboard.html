@@ -22,6 +22,30 @@
         <p class="muted">用户</p>
       </article>
     </div>
+
+    <article>
+      <h3>最近请求</h3>
+      <table>
+        <thead>
+          <tr><th>时间</th><th>模型</th><th>渠道</th><th>状态</th><th>延迟</th><th>Tokens</th></tr>
+        </thead>
+        <tbody>
+          {{range .RecentLogs}}
+          <tr>
+            <td class="mono">{{.TS.Format "01-02 15:04:05"}}</td>
+            <td>{{.Model}}</td>
+            <td>{{.ChannelName}}</td>
+            <td>{{.StatusText}}</td>
+            <td>{{.LatencyMS}}ms</td>
+            <td>{{.PromptTokens}}/{{.CompletionTokens}}</td>
+          </tr>
+          {{else}}
+          <tr><td colspan="6">暂无请求，先去测试台或调用 API 试试</td></tr>
+          {{end}}
+        </tbody>
+      </table>
+      <p><a href="/admin/logs">查看全部日志 →</a></p>
+    </article>
   </main>
 </div>
 </body>

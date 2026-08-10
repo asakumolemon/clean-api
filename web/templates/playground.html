@@ -1,0 +1,41 @@
+{{template "head" .}}
+<div class="layout">
+  {{template "sidebar" .}}
+  <main class="main">
+    <h1>测试台</h1>
+    {{template "flash" .}}
+
+    {{if .Error}}
+    <div class="flash" role="alert">{{.Error}}</div>
+    {{end}}
+
+    <article>
+      <form method="post" action="/admin/playground/chat">
+        <label>模型
+          <select name="model">
+            <option value="">请选择模型</option>
+            {{range .Models}}
+            <option value="{{.Name}}" {{if eq $.Model .Name}}selected{{end}}>{{.Name}}</option>
+            {{end}}
+          </select>
+        </label>
+        <label>系统提示（可选）
+          <textarea name="system" rows="2" placeholder="你是助手…">{{.System}}</textarea>
+        </label>
+        <label>消息
+          <textarea name="message" rows="4" placeholder="输入你的问题…">{{.Message}}</textarea>
+        </label>
+        <button type="submit">发送</button>
+      </form>
+    </article>
+
+    {{if .Result}}
+    <article>
+      <h3>回复</h3>
+      <div style="white-space: pre-wrap;">{{.Result}}</div>
+    </article>
+    {{end}}
+  </main>
+</div>
+</body>
+</html>

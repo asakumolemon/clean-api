@@ -102,6 +102,10 @@ func (s *Store) migrate() error {
 			completion_tokens INTEGER,
 			error TEXT
 		);`,
+		// 请求日志查询索引（M5 日志页筛选/分页用）
+		`CREATE INDEX IF NOT EXISTS idx_request_logs_ts ON request_logs(ts);`,
+		`CREATE INDEX IF NOT EXISTS idx_request_logs_token ON request_logs(token_id);`,
+		`CREATE INDEX IF NOT EXISTS idx_request_logs_status ON request_logs(status);`,
 	}
 	for _, stmt := range stmts {
 		if _, err := s.db.Exec(stmt); err != nil {

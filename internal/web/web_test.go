@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -17,6 +18,7 @@ import (
 	"api-gateway/internal/auth"
 	"api-gateway/internal/channel"
 	"api-gateway/internal/crypto"
+	"api-gateway/internal/router"
 	"api-gateway/internal/store"
 )
 
@@ -59,8 +61,9 @@ func newTestWeb(t *testing.T, up *httptest.Server) (*httptest.Server, *store.Sto
 	}
 	enc, _ := crypto.New("test-enc-key")
 	chm := channel.NewManager(st, enc, 10*time.Second)
+	rt := router.New(st, chm, "random", 10*time.Second, nil)
 
-	srv, err := New(st, am, chm)
+	srv, err := New(st, am, chm, rt)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -178,4 +181,159 @@ func TestChannelProbeFailAndManualRetry(t *testing.T) {
 	if !failed {
 		t.Fatalf("全 404 上游应探测失败, status=%d body=%s", lastStatus, lastBody[:min(500, len(lastBody))])
 	}
+}
+
+// --- M5：日志页 / 测试台 / 用户管理 ---
+
+func TestLogsPage(t *testing.T) {
+	up := fakeUpstream(t)
+	defer up.Close()
+	ts, st, client := newTestWeb(t, up)
+	ctx := context.Background()
+
+	// 造日志数据
+	for i := 0; i < 3; i++ {
+		_ = st.InsertRequestLog(ctx, &store.RequestLog{
+			TS: time.Now().UTC(), RequestID: "req-log-test", Model: "model-a",
+			ChannelID: 1, Status: 200, LatencyMS: 12, PromptTokens: 10, CompletionTokens: 5,
+		})
+	}
+	_ = st.InsertRequestLog(ctx, &store.RequestLog{
+		TS: time.Now().UTC(), RequestID: "req-err", Model: "model-b", Status: 404, LatencyMS: 3,
+	})
+
+	page, err := client.Get(ts.URL + "/admin/logs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := make([]byte, 2<<20)
+	n, _ := page.Body.Read(body)
+	page.Body.Close()
+	html := string(body[:n])
+	if page.StatusCode != http.StatusOK {
+		t.Fatalf("日志页应 200，got %d", page.StatusCode)
+	}
+	if !strings.Contains(html, "req-log-test") || !strings.Contains(html, "共 4 条记录") {
+		t.Error("日志页应展示日志与总数")
+	}
+
+	// 筛选：model=model-b
+	page, _ = client.Get(ts.URL + "/admin/logs?model=model-b")
+	body = make([]byte, 2<<20)
+	n, _ = page.Body.Read(body)
+	page.Body.Close()
+	html = string(body[:n])
+	if !strings.Contains(html, "req-err") || strings.Contains(html, "req-log-test") {
+		t.Error("模型筛选应只显示 model-b 的日志")
+	}
+}
+
+func TestPlayground(t *testing.T) {
+	up := fakeUpstream(t)
+	defer up.Close()
+	ts, st, client := newTestWeb(t, up)
+	ctx := context.Background()
+
+	// 直接建渠道+模型（type=openai，跳过探测流程）
+	chID, err := st.CreateChannel(ctx, "测试渠道", "openai", up.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = st.AddChannelKey(ctx, chID, "sk-test")
+	_, _ = st.SyncModels(ctx, chID, map[string]store.Capabilities{"model-a": {System: true}}, time.Now().UTC())
+
+	// 页面：模型下拉可见
+	page, err := client.Get(ts.URL + "/admin/playground")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := make([]byte, 1<<20)
+	n, _ := page.Body.Read(body)
+	page.Body.Close()
+	if page.StatusCode != http.StatusOK || !strings.Contains(string(body[:n]), "model-a") {
+		t.Fatalf("测试台页应 200 且包含模型下拉，got %d", page.StatusCode)
+	}
+
+	// 对话：上游返回 {"choices":[]}，页面应 200 且无错误提示
+	resp, err := client.PostForm(ts.URL+"/admin/playground/chat", url.Values{
+		"model":   {"model-a"},
+		"system":  {"你是助手"},
+		"message": {"你好"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body = make([]byte, 2<<20)
+	n, _ = resp.Body.Read(body)
+	resp.Body.Close()
+	html := string(body[:n])
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("对话应 200，got %d", resp.StatusCode)
+	}
+	if strings.Contains(html, "对话失败") {
+		t.Error("对话不应失败：", html)
+	}
+}
+
+func TestUsersPage(t *testing.T) {
+	up := fakeUpstream(t)
+	defer up.Close()
+	ts, st, client := newTestWeb(t, up)
+
+	// 列表包含 admin
+	page, err := client.Get(ts.URL + "/admin/users")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := make([]byte, 1<<20)
+	n, _ := page.Body.Read(body)
+	page.Body.Close()
+	if page.StatusCode != http.StatusOK || !strings.Contains(string(body[:n]), "admin") {
+		t.Fatalf("用户页应 200 且包含 admin，got %d", page.StatusCode)
+	}
+
+	// 新建用户
+	resp, err := client.PostForm(ts.URL+"/admin/users", url.Values{
+		"username": {"bob"}, "password": {"bob123"}, "role": {"user"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusFound {
+		t.Fatal("创建用户应 302，got", resp.StatusCode)
+	}
+	users, _ := st.ListUsers(context.Background())
+	if len(users) != 2 {
+		t.Fatalf("应 2 个用户，got %d", len(users))
+	}
+	bob := users[1]
+	if bob.Role != "user" {
+		t.Error("新用户角色应为 user")
+	}
+
+	// 改角色
+	resp, err = client.PostForm(ts.URL+"/admin/users/"+itoa64(bob.ID)+"/role", url.Values{"role": {"admin"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	got, _ := st.GetUserByID(context.Background(), bob.ID)
+	if got.Role != "admin" {
+		t.Error("角色应更新为 admin")
+	}
+
+	// 删除
+	resp, err = client.PostForm(ts.URL+"/admin/users/"+itoa64(bob.ID)+"/delete", url.Values{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if _, err := st.GetUserByID(context.Background(), bob.ID); err != store.ErrNotFound {
+		t.Error("用户应已删除")
+	}
+}
+
+func itoa64(id int64) string {
+	return strconv.FormatInt(id, 10)
 }

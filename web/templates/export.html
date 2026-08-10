@@ -1,0 +1,33 @@
+{{template "head" .}}
+<div class="layout">
+  {{template "sidebar" .}}
+  <main class="main">
+    <h1>导入导出</h1>
+    {{template "flash" .}}
+
+    <article>
+      <h3>导出配置</h3>
+      <p class="muted">导出全部渠道（含加密 key）、模型、用户与令牌（仅哈希）为单个 JSON 文件，可用于迁移服务器。</p>
+      <a role="button" href="/admin/export/download">下载配置 JSON</a>
+      <p class="muted" style="margin-top:.5rem">
+        注意：<br>
+        1. 渠道 key 为加密密文，迁移到新服务器需配置相同的 <code>GATEWAY_ENC_KEY</code>；<br>
+        2. 令牌只导出哈希，明文不可恢复，迁移后请重新生成令牌。
+      </p>
+    </article>
+
+    <article>
+      <h3>导入配置</h3>
+      <p class="muted">导入为<strong>替换式</strong>：现有渠道/模型/用户/令牌将被整体清空并重建（单事务，失败自动回滚）。</p>
+      <form method="post" action="/admin/import" enctype="multipart/form-data"
+            onsubmit="return confirm('确认导入？现有全部渠道/模型/用户/令牌将被替换。')">
+        <label>配置文件
+          <input type="file" name="file" accept=".json,application/json" required>
+        </label>
+        <button type="submit">导入</button>
+      </form>
+    </article>
+  </main>
+</div>
+</body>
+</html>

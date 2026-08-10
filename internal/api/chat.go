@@ -1,12 +1,15 @@
 // Package api 对外 HTTP 入口（/v1/*）。M4 起支持三个协议入口（流式+非流式）：
 // OpenAI Chat / Responses / Anthropic Messages，内部统一转 IR 再路由到上游。
+// M5 起：每请求生成 request_id（X-Request-Id）并异步写入请求日志（失败可丢）。
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
+	"time"
 
 	"api-gateway/internal/auth"
 	"api-gateway/internal/protocol"
@@ -57,6 +60,9 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request, entry entryProto
 		s.writeEntryError(w, entry, http.StatusUnauthorized, "unauthorized", "缺少鉴权上下文")
 		return
 	}
+	requestID := protocol.RandHex(12)
+	w.Header().Set("X-Request-Id", requestID)
+	start := time.Now()
 
 	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 	if err != nil {
@@ -78,10 +84,10 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request, entry entryProto
 	}
 
 	if !req.Stream {
-		s.handleNonStream(w, r, entry, req)
+		s.handleNonStream(w, r, entry, req, requestID, start)
 		return
 	}
-	s.handleStream(w, r, entry, req)
+	s.handleStream(w, r, entry, req, requestID, start)
 }
 
 func parseEntry(entry entryProtocol, body []byte) (*protocol.ChatRequest, error) {
@@ -96,25 +102,28 @@ func parseEntry(entry entryProtocol, body []byte) (*protocol.ChatRequest, error)
 }
 
 // handleNonStream 非流式：router.Chat → 出口序列化 → 200 JSON。
-func (s *Server) handleNonStream(w http.ResponseWriter, r *http.Request, entry entryProtocol, req *protocol.ChatRequest) {
-	resp, err := s.router.Chat(r.Context(), req.Model, req)
+func (s *Server) handleNonStream(w http.ResponseWriter, r *http.Request, entry entryProtocol, req *protocol.ChatRequest, requestID string, start time.Time) {
+	res, err := s.router.Chat(r.Context(), req.Model, req)
 	if err != nil {
+		s.logRequest(r, req.Model, 0, start, requestID, errorStatus(err), err.Error(), 0, 0)
 		s.writeRouteError(w, entry, err, req.Model)
 		return
 	}
 	var out []byte
 	switch entry {
 	case entryAnthropic:
-		out, err = protocol.SerializeAnthropicMessagesResponse(resp)
+		out, err = protocol.SerializeAnthropicMessagesResponse(res.Resp)
 	case entryResponses:
-		out, err = protocol.SerializeResponsesResponse(resp)
+		out, err = protocol.SerializeResponsesResponse(res.Resp)
 	default:
-		out, err = protocol.SerializeOpenAIChatResponse(resp)
+		out, err = protocol.SerializeOpenAIChatResponse(res.Resp)
 	}
 	if err != nil {
 		s.writeEntryError(w, entry, http.StatusInternalServerError, "internal_error", "序列化响应失败: "+err.Error())
 		return
 	}
+	s.logRequest(r, req.Model, res.ChannelID, start, requestID, http.StatusOK, "",
+		res.Resp.Usage.PromptTokens, res.Resp.Usage.CompletionTokens)
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(out)
@@ -122,14 +131,14 @@ func (s *Server) handleNonStream(w http.ResponseWriter, r *http.Request, entry e
 
 // handleStream 流式：SSE 头 → 首个事件时写 200 → router.ChatStream（emit 写出口事件）。
 // 首事件前的路由错误仍可返回正常 HTTP 错误状态；已开始输出后的错误写协议 error 事件。
-func (s *Server) handleStream(w http.ResponseWriter, r *http.Request, entry entryProtocol, req *protocol.ChatRequest) {
+func (s *Server) handleStream(w http.ResponseWriter, r *http.Request, entry entryProtocol, req *protocol.ChatRequest, requestID string, start time.Time) {
 	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("X-Accel-Buffering", "no")
 
 	writer := newStreamWriter(entry, w, req.Model)
 	started := false
-	err := s.router.ChatStream(r.Context(), req.Model, req, func(ev protocol.StreamEvent) error {
+	chID, err := s.router.ChatStream(r.Context(), req.Model, req, func(ev protocol.StreamEvent) error {
 		if !started {
 			started = true
 			w.WriteHeader(http.StatusOK)
@@ -139,12 +148,70 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request, entry entr
 	if err != nil {
 		if !started {
 			// 路由层错误（模型不存在/上游 4xx 等）：HTTP 头未发，可写正常 JSON 错误
+			status := errorStatus(err)
+			s.logRequest(r, req.Model, 0, start, requestID, status, err.Error(), 0, 0)
 			s.writeRouteError(w, entry, err, req.Model)
 			return
 		}
 		_ = writer.WriteError(err) // 流中错误：协议 error 事件
+		s.logRequest(r, req.Model, chID, start, requestID, 0, err.Error(), 0, 0)
 	}
 	_ = writer.Finish() // 收尾（未收到 done 时补发结束事件，防客户端挂起）
+}
+
+// logRequest 异步写请求日志（失败忽略，不影响主流程，符合 REQUIREMENTS §2.6）。
+func (s *Server) logRequest(r *http.Request, model string, channelID int64, start time.Time, requestID string, status int, errText string, promptTokens, completionTokens int) {
+	tok := auth.TokenFromContext(r.Context())
+	user := auth.UserFromContext(r.Context())
+	var tokID, userID int64
+	if tok != nil {
+		tokID = tok.ID
+	}
+	if user != nil {
+		userID = user.ID
+	} else if tok != nil {
+		userID = tok.UserID
+	}
+	log := &store.RequestLog{
+		TS:               time.Now().UTC(),
+		RequestID:        requestID,
+		TokenID:          tokID,
+		UserID:           userID,
+		Model:            model,
+		ChannelID:        channelID,
+		Status:           status,
+		LatencyMS:        time.Since(start).Milliseconds(),
+		PromptTokens:     promptTokens,
+		CompletionTokens: completionTokens,
+		Error:            truncateLog(errText, 300),
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = s.store.InsertRequestLog(ctx, log)
+	}()
+}
+
+// errorStatus 路由错误 → 日志用状态码。
+func errorStatus(err error) int {
+	if errors.Is(err, router.ErrModelNotFound) {
+		return http.StatusNotFound
+	}
+	var uperr *upstream.Error
+	if errors.As(err, &uperr) {
+		if uperr.StatusCode > 0 {
+			return uperr.StatusCode
+		}
+		return http.StatusBadGateway // 网络层错误
+	}
+	return http.StatusInternalServerError
+}
+
+func truncateLog(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "…"
 }
 
 // newStreamWriter 按入口构造流式出口编码器（ID 由网关合成，客户端不校验格式）。

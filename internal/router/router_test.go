@@ -58,7 +58,7 @@ func newTestEnv(t *testing.T, strategy string) (*store.Store, *Router) {
 	}
 	t.Cleanup(func() { st.Close() })
 	chm := channel.NewManager(st, nil, 5*time.Second) // enc=nil → key 明文
-	rt := New(st, chm, strategy, 5*time.Second)
+	rt := New(st, chm, strategy, 5*time.Second, nil)
 	return st, rt
 }
 
@@ -94,12 +94,12 @@ func TestChatSuccess(t *testing.T) {
 	mock := chatMock(t, "你好！")
 	addChannel(t, st, "主渠道", "openai", mock.srv.URL, []string{"sk-1"}, map[string]store.Capabilities{"deepseek-chat": {}})
 
-	resp, err := rt.Chat(context.Background(), "deepseek-chat", chatReq("deepseek-chat"))
+	res, err := rt.Chat(context.Background(), "deepseek-chat", chatReq("deepseek-chat"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(resp.Choices) != 1 || resp.Choices[0].Message.Content[0].Text != "你好！" {
-		t.Error("响应内容错误:", resp)
+	if len(res.Resp.Choices) != 1 || res.Resp.Choices[0].Message.Content[0].Text != "你好！" {
+		t.Error("响应内容错误:", res.Resp)
 	}
 	if mock.reqs.Load() != 1 {
 		t.Error("上游应只被调用 1 次，got", mock.reqs.Load())
@@ -123,12 +123,12 @@ func TestChatKeyCooldown(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	resp, err := rt.Chat(context.Background(), "m", chatReq("m"))
+	res, err := rt.Chat(context.Background(), "m", chatReq("m"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resp.Choices[0].Message.Content[0].Text != "第二个 key 成功" {
-		t.Error("应换 key 后成功，got", resp)
+	if res.Resp.Choices[0].Message.Content[0].Text != "第二个 key 成功" {
+		t.Error("应换 key 后成功，got", res.Resp)
 	}
 	// key1 应处于冷却中
 	keys, _ := st.ListChannelKeys(context.Background(), chID)
@@ -147,12 +147,12 @@ func TestChatFailoverChannel(t *testing.T) {
 	addChannel(t, st, "坏渠道", "openai", bad.srv.URL, []string{"sk-1"}, map[string]store.Capabilities{"m": {}})
 	addChannel(t, st, "好渠道", "openai", good.srv.URL, []string{"sk-2"}, map[string]store.Capabilities{"m": {}})
 
-	resp, err := rt.Chat(context.Background(), "m", chatReq("m"))
+	res, err := rt.Chat(context.Background(), "m", chatReq("m"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resp.Choices[0].Message.Content[0].Text != "渠道 B 应答" {
-		t.Error("应切换到渠道 B，got", resp)
+	if res.Resp.Choices[0].Message.Content[0].Text != "渠道 B 应答" {
+		t.Error("应切换到渠道 B，got", res.Resp)
 	}
 }
 
@@ -169,12 +169,12 @@ func TestChatRetrySameChannel(t *testing.T) {
 	})
 	addChannel(t, st, "单渠道", "openai", mock.srv.URL, []string{"sk-1"}, map[string]store.Capabilities{"m": {}})
 
-	resp, err := rt.Chat(context.Background(), "m", chatReq("m"))
+	res, err := rt.Chat(context.Background(), "m", chatReq("m"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resp.Choices[0].Message.Content[0].Text != "重试成功" {
-		t.Error("应重试同一渠道，got", resp)
+	if res.Resp.Choices[0].Message.Content[0].Text != "重试成功" {
+		t.Error("应重试同一渠道，got", res.Resp)
 	}
 	if mock.reqs.Load() != 2 {
 		t.Error("应恰好请求 2 次，got", mock.reqs.Load())
@@ -250,8 +250,8 @@ func TestChatRoundRobin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c1 := first.Choices[0].Message.Content[0].Text
-	c2 := second.Choices[0].Message.Content[0].Text
+	c1 := first.Resp.Choices[0].Message.Content[0].Text
+	c2 := second.Resp.Choices[0].Message.Content[0].Text
 	if c1 == c2 {
 		t.Errorf("round_robin 应轮换渠道，两次都是 %q", c1)
 	}
@@ -344,7 +344,7 @@ func TestChatStreamRetryBeforeEmit(t *testing.T) {
 	}
 
 	var got []string
-	err := rt.ChatStream(context.Background(), "m", chatReq("m"), func(ev protocol.StreamEvent) error {
+	_, err := rt.ChatStream(context.Background(), "m", chatReq("m"), func(ev protocol.StreamEvent) error {
 		got = append(got, ev.Type+":"+ev.Delta)
 		return nil
 	})
@@ -377,7 +377,7 @@ func TestChatStreamNoRetryAfterEmit(t *testing.T) {
 	addChannel(t, st, "好渠道", "openai", good.srv.URL, []string{"sk-2"}, map[string]store.Capabilities{"m": {}})
 
 	var got []string
-	err := rt.ChatStream(context.Background(), "m", chatReq("m"), func(ev protocol.StreamEvent) error {
+	_, err := rt.ChatStream(context.Background(), "m", chatReq("m"), func(ev protocol.StreamEvent) error {
 		got = append(got, ev.Type)
 		return nil
 	})
@@ -401,7 +401,7 @@ func TestChatStreamPassThrough4xx(t *testing.T) {
 	})
 	addChannel(t, st, "渠道", "openai", mock.srv.URL, []string{"sk-1"}, map[string]store.Capabilities{"m": {}})
 
-	err := rt.ChatStream(context.Background(), "m", chatReq("m"), func(ev protocol.StreamEvent) error { return nil })
+	_, err := rt.ChatStream(context.Background(), "m", chatReq("m"), func(ev protocol.StreamEvent) error { return nil })
 	var uperr *upstream.Error
 	if !errors.As(err, &uperr) || uperr.StatusCode != http.StatusBadRequest {
 		t.Fatalf("应透传 400，got %v", err)
@@ -457,7 +457,7 @@ func TestChatSystemFold(t *testing.T) {
 		mock := streamMock(t, streamSSE, func(b string) { got = b })
 		addChannel(t, st, "渠道", "openai", mock.srv.URL, []string{"sk-1"},
 			map[string]store.Capabilities{"m": {System: false, Tools: true, Vision: false, JSONMode: true}})
-		if err := rt.ChatStream(ctx, "m", newReq(), func(ev protocol.StreamEvent) error { return nil }); err != nil {
+		if _, err := rt.ChatStream(ctx, "m", newReq(), func(ev protocol.StreamEvent) error { return nil }); err != nil {
 			t.Fatal(err)
 		}
 		checkBody(t, got, false)
@@ -469,9 +469,71 @@ func TestChatSystemFold(t *testing.T) {
 		mock := streamMock(t, streamSSE, func(b string) { got = b })
 		addChannel(t, st, "渠道", "openai", mock.srv.URL, []string{"sk-1"},
 			map[string]store.Capabilities{"m": {System: true}})
-		if err := rt.ChatStream(ctx, "m", newReq(), func(ev protocol.StreamEvent) error { return nil }); err != nil {
+		if _, err := rt.ChatStream(ctx, "m", newReq(), func(ev protocol.StreamEvent) error { return nil }); err != nil {
 			t.Fatal(err)
 		}
 		checkBody(t, got, true)
 	})
+}
+
+// 全局模型重定向：请求名 → 实际模型名后再路由。
+func TestChatRedirect(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	chm := channel.NewManager(st, nil, 5*time.Second)
+	rt := New(st, chm, "random", 5*time.Second, map[string]string{"deepseek-chat": "ds-main"})
+
+	var gotModel string
+	mock := newCountedServer(t, func(n int64, w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var req struct {
+			Model string `json:"model"`
+		}
+		_ = json.Unmarshal(body, &req)
+		gotModel = req.Model
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, respJSON("ok"))
+	})
+	addChannel(t, st, "渠道", "openai", mock.srv.URL, []string{"sk-1"}, map[string]store.Capabilities{"ds-main": {}})
+
+	// 请求 "deepseek-chat"（无此模型名）→ 重定向到 ds-main 路由成功
+	res, err := rt.Chat(context.Background(), "deepseek-chat", chatReq("deepseek-chat"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Resp.Choices[0].Message.Content[0].Text != "ok" {
+		t.Error("重定向后应成功", res.Resp)
+	}
+	if gotModel != "ds-main" {
+		t.Error("上游应收到重定向后的模型名 ds-main，got", gotModel)
+	}
+	// 未命中重定向的模型名照常 404
+	if _, err := rt.Chat(context.Background(), "gpt-4o", chatReq("gpt-4o")); !errors.Is(err, ErrModelNotFound) {
+		t.Error("未重定向模型应 404，got", err)
+	}
+}
+
+// ChatResult 携带命中渠道 ID（请求日志用）。
+func TestChatResultChannelID(t *testing.T) {
+	st, rt := newTestEnv(t, "random")
+	mock := chatMock(t, "x")
+	chID := addChannel(t, st, "渠道", "openai", mock.srv.URL, []string{"sk-1"}, map[string]store.Capabilities{"m": {}})
+	res, err := rt.Chat(context.Background(), "m", chatReq("m"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.ChannelID != chID {
+		t.Errorf("ChannelID 应为 %d，got %d", chID, res.ChannelID)
+	}
+	// 流式同样返回渠道 ID
+	got, err := rt.ChatStream(context.Background(), "m", chatReq("m"), func(ev protocol.StreamEvent) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != chID {
+		t.Errorf("流式 ChannelID 应为 %d，got %d", chID, got)
+	}
 }

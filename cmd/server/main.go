@@ -69,10 +69,10 @@ func main() {
 		fatal("初始化加密失败", err)
 	}
 	chm := channel.NewManager(st, enc, time.Duration(cfg.DefaultTimeoutSec)*time.Second)
-	rt := router.New(st, chm, cfg.RoutingStrategy, time.Duration(cfg.DefaultTimeoutSec)*time.Second)
+	rt := router.New(st, chm, cfg.RoutingStrategy, time.Duration(cfg.DefaultTimeoutSec)*time.Second, cfg.ModelRedirects)
 
 	r := chi.NewRouter()
-	adminWeb, err := web.New(st, sessions, chm)
+	adminWeb, err := web.New(st, sessions, chm, rt)
 	if err != nil {
 		fatal("加载管理面模板失败", err)
 	}
@@ -95,6 +95,38 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// 渠道健康检查（M5）：定时巡检，连续失败标记 down，恢复自动回 active。
+	if cfg.HealthCheckEnabled {
+		hc := channel.NewHealthChecker(st, chm, time.Duration(cfg.DefaultTimeoutSec)*time.Second, cfg.HealthCheckMaxFailures)
+		go hc.Start(ctx, time.Duration(cfg.HealthCheckIntervalSec)*time.Second)
+		slog.Info("渠道健康检查已开启", "间隔秒", cfg.HealthCheckIntervalSec, "最大连续失败", cfg.HealthCheckMaxFailures)
+	}
+
+	// 请求日志保留清理（M5）：启动时 + 每小时执行一次。
+	go func() {
+		retention := time.Duration(cfg.LogRetentionDays) * 24 * time.Hour
+		ticker := time.NewTicker(time.Hour)
+		defer ticker.Stop()
+		clean := func() {
+			before := time.Now().UTC().Add(-retention)
+			n, err := st.DeleteRequestLogsBefore(context.Background(), before)
+			if err != nil {
+				slog.Error("清理请求日志失败", "error", err)
+			} else if n > 0 {
+				slog.Info("已清理过期请求日志", "条数", n, "保留天数", cfg.LogRetentionDays)
+			}
+		}
+		clean()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				clean()
+			}
+		}
+	}()
 
 	go func() {
 		slog.Info("网关已启动", "addr", cfg.Addr, "db", cfg.DBPath)

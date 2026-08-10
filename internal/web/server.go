@@ -11,25 +11,30 @@ import (
 
 	"api-gateway/internal/auth"
 	"api-gateway/internal/channel"
+	"api-gateway/internal/router"
 	"api-gateway/internal/store"
 	webassets "api-gateway/web"
 )
 
 // Server 管理面 handler 集合。
 type Server struct {
-	store *store.Store
-	auth  *auth.SessionManager
-	chm   *channel.Manager
-	tpl   *template.Template
+	store  *store.Store
+	auth   *auth.SessionManager
+	chm    *channel.Manager
+	router *router.Router
+	tpl    *template.Template
 }
 
 // New 解析内嵌模板并构造管理面服务。
-func New(s *store.Store, am *auth.SessionManager, chm *channel.Manager) (*Server, error) {
-	tpl, err := template.ParseFS(webassets.FS, "templates/*.html")
+func New(s *store.Store, am *auth.SessionManager, chm *channel.Manager, rt *router.Router) (*Server, error) {
+	tpl, err := template.New("").Funcs(template.FuncMap{
+		"add": func(a, b int) int { return a + b },
+		"sub": func(a, b int) int { return a - b },
+	}).ParseFS(webassets.FS, "templates/*.html")
 	if err != nil {
 		return nil, err
 	}
-	return &Server{store: s, auth: am, chm: chm, tpl: tpl}, nil
+	return &Server{store: s, auth: am, chm: chm, router: rt, tpl: tpl}, nil
 }
 
 // Mount 注册 /admin 路由。
@@ -58,6 +63,17 @@ func (s *Server) Mount(r chi.Router) {
 			r.Post("/models/{id}/toggle", s.toggleModel)
 			r.Post("/models/{id}/alias", s.setModelAlias)
 			r.Post("/models/{id}/override", s.overrideModel)
+			r.Get("/logs", s.logsPage)
+			r.Get("/playground", s.playgroundPage)
+			r.Post("/playground/chat", s.playgroundChat)
+			r.Get("/users", s.usersPage)
+			r.Post("/users", s.createUser)
+			r.Post("/users/{id}/role", s.setUserRole)
+			r.Post("/users/{id}/password", s.resetUserPassword)
+			r.Post("/users/{id}/delete", s.deleteUser)
+			r.Get("/export", s.exportPage)
+			r.Get("/export/download", s.exportConfig)
+			r.Post("/import", s.importConfig)
 		})
 	})
 }

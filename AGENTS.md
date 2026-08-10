@@ -2,7 +2,7 @@
 
 ## 项目状态
 
-- 已完成 **M1 骨架**、**M2 渠道+探测**、**M3 协议转换·非流式** 与 **M4 协议转换·流式+全入口**（统一事件流 + 三入口流式/非流式 + 工具调用互转 + OpenAI 上游流式适配：Anthropic 入口可让 Claude Code/Cursor 连网关用 DeepSeek，Responses 入口可让新版 OpenAI SDK 连接）。下一步是 M5 管理面完善（日志页、Playground、模型别名、导入导出、健康检查）。里程碑计划见 `REQUIREMENTS.md` 第 5 节。
+- 已完成 **M1 骨架**、**M2 渠道+探测**、**M3 协议转换·非流式**、**M4 协议转换·流式+全入口** 与 **M5 管理面完善**（请求日志页、测试台、用户管理、配置导入导出、渠道健康检查、全局模型重定向、request_id）。下一步是 M6 打磨（错误处理、冷却重试、Dockerfile、文档）。里程碑计划见 `REQUIREMENTS.md` 第 5 节。
 - 仓库名 `clean-api`，但 Go module 名是 `api-gateway`（对应 REQUIREMENTS 里的项目根目录名）。
 - `REQUIREMENTS.md`（中文）是唯一且权威的需求/设计文档：含目录结构、SQLite 数据模型、IR 设计、里程碑 M1–M6 等。改动需求前先看它。
 - `prototype.html` 是管理后台的**静态原型**（Pico.css + 前端 JS 切页）。它只是设计参考，**不是生产模板**：正式方案是服务端渲染 `html/template`，不前后端分离、无构建工具（见 REQUIREMENTS 2.5）。不要照搬原型里的 SPA 式 `data-page` 切页写法。
@@ -11,18 +11,18 @@
 
 - `cmd/server/main.go`：入口，加载配置、建库、首启建管理员、建 crypto/channel 管理器、挂路由。
 - `internal/config`：`config.json` + `GATEWAY_*` 环境变量覆盖；`session_secure`（明文 HTTP 必须为 false）。
-- `internal/store`：`database/sql` + `modernc.org/sqlite`，users/tokens/channels/channel_keys/models 的 CRUD 已齐（request_logs 表已建，M5 用）。
+- `internal/store`：`database/sql` + `modernc.org/sqlite`，users/tokens/channels/channel_keys/models/request_logs 的 CRUD 已齐。M5 新增：`logs.go`（日志 CRUD/筛选/分页/清理，`LogFilter{Model,Token,Status,UserID}`）、`export.go`（`ExportAll`/`ImportAll` 全量导出与替换式导入，独立 DTO 字段小写）、users 扩展（改角色/重置密码/删除级联删令牌）。
 - `internal/auth`：bcrypt、token 生成(32B Base64)/sha256、session（Secure 属性可配）、`APIAuth` 中间件、`CheckModelAllowed`。
 - `internal/crypto`：上游 API key 的 AES-GCM 加解密，无 `GATEWAY_ENC_KEY` 时明文降级；密文带 `enc:` 前缀。
-- `internal/channel`：协议自动识别（GET /v1/models→openai、POST /v1/messages→anthropic、POST /v1/responses→responses）、模型列表同步、能力探测（system/tools/vision/json_mode，最小试调用）、多 key 轮换（random/round_robin）+ 冷却、异步探测进度（内存态，管理页轮询，`ProbeStatus`）。
+- `internal/channel`：协议自动识别（GET /v1/models→openai、POST /v1/messages→anthropic、POST /v1/responses→responses）、模型列表同步、能力探测（system/tools/vision/json_mode，最小试调用）、多 key 轮换（random/round_robin）+ 冷却、异步探测进度（内存态，管理页轮询，`ProbeStatus`）。M5 新增 `health.go`：`HealthChecker` 定时巡检 active/down 渠道（经 Manager 取真实 key 发最小请求，避免假 key 401 误判），连续失败 N 次→down、成功 1 次→恢复 active。
 - `internal/protocol`：IR 定义（`ChatRequest`/`Message`/`ChatResponse`/`StreamEvent` 等，按 REQUIREMENTS §2.3.2）+ 三协议解析/序列化/流式翻译：
   - `openai.go`：Chat 入口解析与出口序列化 + `OpenAIStreamParser`（上游流解析，tool_calls 按 index 累积）+ `OpenAIChatStreamWriter`（出口流编码，`[DONE]` 收尾）；
   - `anthropic.go`：Messages 入口解析（system 多形态/tool_use/tool_result/image）与出口序列化（tool_use 块、stop_reason 映射）+ `AnthropicStreamWriter`（message_start/content_block_start/delta/stop/message_delta/message_stop 状态机）；
   - `responses.go`：Responses 入口解析（instructions/input 条目）与出口序列化（output 条目）+ `ResponsesStreamWriter`（output_text.delta/function_call_arguments.delta/response.completed，无 `[DONE]`）。
 - `internal/upstream`：`Upstream` 接口（`Chat` + `ChatStream`；Models/Ping 为后续扩展点）+ `OpenAIAdapter`（IR→OpenAI→IR，流式 SSE 逐行解析，单行上限 1MB）。错误统一为 `*upstream.Error{StatusCode,Type,Message,Retryable}`：5xx/网络 `Retryable=true`，429/401 保留状态码供 key 冷却，4xx 透传。
-- `internal/router`：模型→渠道路由（`ListChannelsByModel` 按 name/alias 命中、模型启用、渠道 active、带能力）、全局策略 `routing_strategy`（random/round_robin）、5xx/网络错误换渠道重试 1 轮（最多 4 次尝试）、429/401 标记 key 冷却换 key、4xx 直接透传；`ChatStream` 重试只在**首个事件 emit 前**（已输出即中断）；上游不支持 system 时自动折叠 system 进首条 user（`protocol.FoldSystemIntoUser`）；非 openai 类型渠道返回 501（上游适配器留后续）。
-- `internal/api`：三入口 handler（`/v1/chat/completions`、`/v1/responses`、`/v1/messages`）共用 `handle` 流水线（鉴权→入口解析→白名单→router→出口序列化/流式编码）；流式 SSE 头在**首个事件时**才 WriteHeader 200，之前的路由错误仍返回正常 HTTP 错误；`GET /v1/models`（启用模型对外名列表，alias 非空用 alias、去重）。错误格式：OpenAI/Responses 用 `{error:{message,type}}`，Anthropic 用 `{type:"error",error:{...}}`（类型按状态码映射）。
-- `internal/web` + 根目录 `web/`（embed FS）：登录/仪表盘/令牌/**渠道**/**模型**页（渠道页探测中带 meta 5s 自动刷新），Pico.css 内嵌。
+- `internal/router`：模型→渠道路由（`ListChannelsByModel` 按 name/alias 命中、模型启用、渠道 active、带能力）、全局策略 `routing_strategy`（random/round_robin）、**全局模型重定向** `model_redirects`（请求名→实际名，M5）、5xx/网络错误换渠道重试 1 轮（最多 4 次尝试）、429/401 标记 key 冷却换 key、4xx 直接透传；`Chat` 返回 `*ChatResult{Resp, ChannelID}`、`ChatStream` 返回 `(channelID, error)`（请求日志用）；`ChatStream` 重试只在**首个事件 emit 前**（已输出即中断）；上游不支持 system 时自动折叠 system 进首条 user（`protocol.FoldSystemIntoUser`）；非 openai 类型渠道返回 501（上游适配器留后续）。
+- `internal/api`：三入口 handler（`/v1/chat/completions`、`/v1/responses`、`/v1/messages`）共用 `handle` 流水线（鉴权→入口解析→白名单→router→出口序列化/流式编码）；每请求生成 `X-Request-Id` 并**异步写请求日志**（`logRequest`，失败可丢，符合 §2.6）；流式 SSE 头在**首个事件时**才 WriteHeader 200，之前的路由错误仍返回正常 HTTP 错误；`GET /v1/models`（启用模型对外名列表，alias 非空用 alias、去重）。错误格式：OpenAI/Responses 用 `{error:{message,type}}`，Anthropic 用 `{type:"error",error:{...}}`（类型按状态码映射）。
+- `internal/web` + 根目录 `web/`（embed FS）：登录/仪表盘（含最近请求）/令牌/**渠道**/**模型**/请求日志/测试台/用户管理/导入导出页（渠道页探测中带 meta 5s 自动刷新），Pico.css 内嵌。模板注册了 `add`/`sub` 函数（分页用）。`web.New(st, sessions, chm, router)` 依赖 router（测试台用）。
 
 ## M2 关键决策
 
@@ -30,6 +30,15 @@
 - 能力探测对每个模型发 4 次最小调用（max_tokens=1），2xx 视为支持；结果可手动覆盖（`capability_override` 记录覆盖字段）。
 - key 只存加密值；页面展示掩码（前 4 + … + 后 4）；编辑渠道时填新 key 才替换，留空保留。
 - gorilla/sessions v1.4.0 默认 `Secure=true`，明文 HTTP 下 cookie 不生效——已加 `session_secure` 配置默认关。
+
+## M5 关键决策
+
+- **请求日志**：api 层统一写（`X-Request-Id` + 异步 `logRequest` goroutine，失败忽略不影响主流程）；`router.Chat` 改为返回 `*ChatResult{Resp, ChannelID}`、`ChatStream` 返回 `(channelID, error)` 以记录命中渠道；日志页筛选（模型模糊/令牌精确/状态段）+ 分页；保留清理（启动时 + 每小时，`log_retention_days`）。
+- **健康检查**：只巡检 active/down 且已识别类型的渠道；必须经 `Manager.SelectKey` 取**真实 key** 发请求（假 key 会被上游 401 误判 down）；连续失败 N 次→down（路由自动绕开），成功 1 次→恢复 active。
+- **导入导出**：全量 JSON（users/tokens/channels/channel_keys/models），独立 DTO 字段小写；导入为替换式（单事务清空重建，保留原 id，失败整体回滚）；令牌只含 hash 明文不可恢复、key 为密文需同一 `GATEWAY_ENC_KEY`——页面有注明。
+- **全局重定向** `model_redirects`：api 层白名单校验用原始对外名，router 层查映射替换后再路由（与渠道内 alias 互补）。
+- **用户管理**：删除用户先删其全部令牌（tokens 外键 REFERENCES users 已开启）；禁止删除当前登录账号；`adminOnly` 中间件每次回库读角色，改角色即时生效。
+- 管理面仍为 admin-only（用户角色仅 API 使用，已确认不做分级）。
 
 ## M4 关键决策
 

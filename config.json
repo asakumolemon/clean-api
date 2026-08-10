@@ -7,5 +7,9 @@
   "admin_username": "admin",
   "admin_password": "",
   "session_secret": "",
-  "routing_strategy": "random"
+  "routing_strategy": "random",
+  "health_check_enabled": true,
+  "health_check_interval_seconds": 300,
+  "health_check_max_failures": 3,
+  "model_redirects": {}
 }

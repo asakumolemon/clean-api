@@ -31,7 +31,7 @@ func newTestSrv(t *testing.T) (*Server, *store.Store, *auth.SessionManager) {
 		t.Fatal(err)
 	}
 	chm := channel.NewManager(s, nil, 5*time.Second) // enc=nil → key 明文
-	rt := router.New(s, chm, "random", 5*time.Second)
+	rt := router.New(s, chm, "random", 5*time.Second, nil)
 	return New(s, rt), s, am
 }
 
@@ -654,4 +654,98 @@ func TestModelsList(t *testing.T) {
 	if len(resp.Data) != 1 || resp.Data[0].ID != "deepseek-chat" {
 		t.Errorf("应只返回别名 deepseek-chat，got %+v", resp.Data)
 	}
+}
+
+// --- M5：请求日志与 request_id ---
+
+// waitLogs 轮询等待异步日志落库（最多 2s）。
+func waitLogs(t *testing.T, s *store.Store, want int) []store.RequestLog {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		logs, _ := s.ListRequestLogs(context.Background(), store.LogFilter{}, 20, 0)
+		if len(logs) >= want {
+			return logs
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	logs, _ := s.ListRequestLogs(context.Background(), store.LogFilter{}, 20, 0)
+	t.Fatalf("日志未在超时内写入：got %d，want %d", len(logs), want)
+	return nil
+}
+
+// 完整对话后：X-Request-Id 响应头 + 异步落库（模型/状态/渠道/tokens）。
+func TestChatRequestLogAndID(t *testing.T) {
+	srv, st, am := newTestSrv(t)
+	ctx := context.Background()
+	upstream, _ := chatUpstream(t, "你好！")
+
+	uid, _ := st.CreateUser(ctx, "admin", "hash", "admin")
+	plain := "test-token-abc"
+	_, _ = st.CreateToken(ctx, uid, "t", auth.HashToken(plain), []string{"deepseek-chat"}, true)
+	chID := addTestChannelReturnID(t, st, upstream.URL)
+
+	rec := doChat(t, srv, am, st, plain, `{"model":"deepseek-chat","messages":[{"role":"user","content":"hi"}]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("应 200，got %d", rec.Code)
+	}
+	requestID := rec.Header().Get("X-Request-Id")
+	if requestID == "" {
+		t.Fatal("响应应带 X-Request-Id")
+	}
+
+	logs := waitLogs(t, st, 1)
+	l := logs[0]
+	if l.RequestID != requestID {
+		t.Error("日志 request_id 应与响应头一致")
+	}
+	if l.Model != "deepseek-chat" || l.Status != 200 || l.ChannelID != chID {
+		t.Errorf("日志字段错误: %+v", l)
+	}
+	if l.TokenID == 0 || l.UserID != uid {
+		t.Errorf("日志应记录令牌与用户: %+v", l)
+	}
+	if l.PromptTokens != 5 || l.CompletionTokens != 3 {
+		t.Errorf("日志应记录 tokens: %+v", l)
+	}
+	if l.LatencyMS < 0 {
+		t.Error("延迟不应为负")
+	}
+}
+
+// 路由错误（模型不存在）同样落库，状态 404。
+func TestChatErrorLogged(t *testing.T) {
+	srv, st, am := newTestSrv(t)
+	ctx := context.Background()
+	uid, _ := st.CreateUser(ctx, "admin", "hash", "admin")
+	plain := "test-token-abc"
+	_, _ = st.CreateToken(ctx, uid, "t", auth.HashToken(plain), []string{"deepseek-chat"}, true)
+
+	rec := doChat(t, srv, am, st, plain, `{"model":"deepseek-chat","messages":[{"role":"user","content":"hi"}]}`)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("应 404，got %d", rec.Code)
+	}
+	logs := waitLogs(t, st, 1)
+	if logs[0].Status != http.StatusNotFound || !strings.Contains(logs[0].Error, "model not found") {
+		t.Errorf("错误日志应记录 404 与原因: %+v", logs[0])
+	}
+}
+
+// addTestChannelReturnID 建测试渠道并返回渠道 ID。
+func addTestChannelReturnID(t *testing.T, s *store.Store, baseURL string) int64 {
+	t.Helper()
+	ctx := context.Background()
+	chID, err := s.CreateChannel(ctx, "测试渠道", "openai", baseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AddChannelKey(ctx, chID, "sk-test"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SyncModels(ctx, chID, map[string]store.Capabilities{
+		"deepseek-chat": {System: true, Tools: true, Vision: true, JSONMode: true},
+	}, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	return chID
 }

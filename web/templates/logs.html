@@ -1,0 +1,81 @@
+{{template "head" .}}
+<div class="layout">
+  {{template "sidebar" .}}
+  <main class="main">
+    <h1>请求日志</h1>
+    {{template "flash" .}}
+
+    <article>
+      <details open>
+        <summary role="button" class="secondary outline">筛选</summary>
+        <form method="get" action="/admin/logs" class="grid">
+          <label>模型
+            <input type="text" name="model" value="{{.Filter.Model}}" placeholder="模型名关键字">
+          </label>
+          <label>令牌
+            <select name="token">
+              <option value="">全部</option>
+              {{range .Tokens}}
+              <option value="{{.}}" {{if eq $.Filter.Token .}}selected{{end}}>{{.}}</option>
+              {{end}}
+            </select>
+          </label>
+          <label>状态
+            <select name="status">
+              <option value="">全部</option>
+              <option value="2xx" {{if eq .Filter.Status "2xx"}}selected{{end}}>成功 (2xx)</option>
+              <option value="4xx" {{if eq .Filter.Status "4xx"}}selected{{end}}>客户端错误 (4xx)</option>
+              <option value="5xx" {{if eq .Filter.Status "5xx"}}selected{{end}}>服务端错误 (5xx)</option>
+            </select>
+          </label>
+          <div style="align-self:end">
+            <button type="submit">查询</button>
+          </div>
+        </form>
+      </details>
+    </article>
+
+    <p class="muted">共 {{.Total}} 条记录</p>
+    <table>
+      <thead>
+        <tr>
+          <th>时间</th><th>请求 ID</th><th>令牌</th><th>模型</th><th>渠道</th>
+          <th>状态</th><th>延迟</th><th>Tokens</th><th>错误</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range .Logs}}
+        <tr>
+          <td class="mono">{{.TS.Format "01-02 15:04:05"}}</td>
+          <td class="mono">{{.RequestID}}</td>
+          <td>{{.TokenName}}</td>
+          <td>{{.Model}}</td>
+          <td>{{.ChannelName}}</td>
+          <td>{{.StatusText}}</td>
+          <td>{{.LatencyMS}}ms</td>
+          <td>{{.PromptTokens}}/{{.CompletionTokens}}</td>
+          <td class="mono">{{if .Error}}{{.Error}}{{else}}—{{end}}</td>
+        </tr>
+        {{else}}
+        <tr><td colspan="9">暂无日志，调用一次 API 后这里会出现记录</td></tr>
+        {{end}}
+      </tbody>
+    </table>
+
+    <nav class="grid">
+      <div>
+        {{if gt .Page 1}}
+        <a role="button" class="outline secondary" href="/admin/logs?model={{.Filter.Model}}&token={{.Filter.Token}}&status={{.Filter.Status}}&page={{sub .Page 1}}">上一页</a>
+        {{end}}
+      </div>
+      <div style="text-align:center; align-self:center;">第 {{.Page}} / {{.TotalPages}} 页</div>
+      <div style="text-align:right;">
+        {{if lt .Page .TotalPages}}
+        <a role="button" class="outline secondary" href="/admin/logs?model={{.Filter.Model}}&token={{.Filter.Token}}&status={{.Filter.Status}}&page={{add .Page 1}}">下一页</a>
+        {{end}}
+      </div>
+    </nav>
+  </main>
+</div>
+</body>
+</html>

@@ -72,6 +72,45 @@ func (s *Store) CountAdmin(ctx context.Context) (int, error) {
 	return n, err
 }
 
+// UpdateUserRole 修改用户角色（admin|user）。
+func (s *Store) UpdateUserRole(ctx context.Context, id int64, role string) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE users SET role=? WHERE id=?`, role, id)
+	if err != nil {
+		return fmt.Errorf("修改用户角色: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// UpdateUserPassword 重置用户密码（调用方负责 bcrypt）。
+func (s *Store) UpdateUserPassword(ctx context.Context, id int64, passwordHash string) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE users SET password_hash=? WHERE id=?`, passwordHash, id)
+	if err != nil {
+		return fmt.Errorf("重置用户密码: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// DeleteUser 删除用户及其全部令牌（tokens 有外键 REFERENCES users(id)，必须先删令牌）。
+func (s *Store) DeleteUser(ctx context.Context, id int64) error {
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM tokens WHERE user_id=?`, id); err != nil {
+		return fmt.Errorf("删除用户令牌: %w", err)
+	}
+	res, err := s.db.ExecContext(ctx, `DELETE FROM users WHERE id=?`, id)
+	if err != nil {
+		return fmt.Errorf("删除用户: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 func scanUser(row *sql.Row) (*User, error) {
 	var u User
 	err := row.Scan(&u.ID, &u.Username, &u.PasswordHash, &u.Role, &u.CreatedAt)
