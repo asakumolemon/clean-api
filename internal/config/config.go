@@ -24,6 +24,7 @@ type Config struct {
 	HealthCheckIntervalSec int           `json:"health_check_interval_seconds"` // 健康检查间隔秒，默认 300
 	HealthCheckMaxFailures int           `json:"health_check_max_failures"`     // 连续失败 N 次标记 down，默认 3
 	KeyCooldownSec    int               `json:"key_cooldown_seconds"`     // 单 key 冷却时长秒（429/401 后，默认 60，M6 起使用）
+	ProbeCapabilities bool              `json:"probe_capabilities"`       // 添加渠道时是否对每个模型发最小试调用探测能力（默认关：省时省配额，能力用保守默认值，可在模型管理页手动调整；M6 起使用）
 	ModelRedirects    map[string]string `json:"model_redirects"`          // 全局模型重定向：请求模型名 → 实际模型名（M5 起使用）
 }
 
@@ -118,5 +119,8 @@ func (c *Config) applyEnv() {
 	}
 	if v := get("KEY_COOLDOWN_SECONDS"); v != "" {
 		fmt.Sscanf(v, "%d", &c.KeyCooldownSec)
+	}
+	if v := get("PROBE_CAPABILITIES"); v != "" {
+		c.ProbeCapabilities = v == "1" || v == "true"
 	}
 }

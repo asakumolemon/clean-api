@@ -211,7 +211,16 @@ func (s *Server) toggleChannel(w http.ResponseWriter, r *http.Request) {
 func (s *Server) resyncChannel(w http.ResponseWriter, r *http.Request) {
 	id, _ := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	s.chm.StartProbe(id)
-	s.setFlash(w, r, "已触发重新探测")
+	s.setFlash(w, r, "已触发重新探测（协议识别 + 模型同步）")
+	http.Redirect(w, r, "/admin/channels", http.StatusFound)
+}
+
+// probeCapsChannel POST /admin/channels/{id}/probe-caps：
+// 仅对该渠道全部模型执行能力探测（手动触发）。
+func (s *Server) probeCapsChannel(w http.ResponseWriter, r *http.Request) {
+	id, _ := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	s.chm.StartCapabilitiesProbe(id)
+	s.setFlash(w, r, "已触发能力探测，页面将自动刷新进度")
 	http.Redirect(w, r, "/admin/channels", http.StatusFound)
 }
 

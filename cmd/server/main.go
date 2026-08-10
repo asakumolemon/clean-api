@@ -89,6 +89,7 @@ func main() {
 	}
 	chm := channel.NewManager(st, enc, time.Duration(cfg.DefaultTimeoutSec)*time.Second)
 	chm.SetCooldown(time.Duration(cfg.KeyCooldownSec) * time.Second)
+	chm.SetProbeCapabilities(cfg.ProbeCapabilities)
 	rt := router.New(st, chm, cfg.RoutingStrategy, time.Duration(cfg.DefaultTimeoutSec)*time.Second, cfg.ModelRedirects)
 
 	r := chi.NewRouter()

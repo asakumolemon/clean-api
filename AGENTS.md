@@ -14,7 +14,7 @@
 - `internal/store`：`database/sql` + `modernc.org/sqlite`，users/tokens/channels/channel_keys/models/request_logs 的 CRUD 已齐。M5 新增：`logs.go`（日志 CRUD/筛选/分页/清理，`LogFilter{Model,Token,Status,UserID}`）、`export.go`（`ExportAll`/`ImportAll` 全量导出与替换式导入，独立 DTO 字段小写）、users 扩展（改角色/重置密码/删除级联删令牌）。
 - `internal/auth`：bcrypt、token 生成(32B Base64)/sha256、session（Secure 属性可配）、`APIAuth` 中间件、`CheckModelAllowed`。
 - `internal/crypto`：上游 API key 的 AES-GCM 加解密，无 `GATEWAY_ENC_KEY` 时明文降级；密文带 `enc:` 前缀。
-- `internal/channel`：协议自动识别（GET /v1/models→openai、POST /v1/messages→anthropic、POST /v1/responses→responses；**探测失败时错误信息带各协议证据**：状态码/网络错误+响应体截断，M6）、模型列表同步、能力探测（system/tools/vision/json_mode，最小试调用）、多 key 轮换（random/round_robin）+ 冷却（时长可配 `SetCooldown`，默认 60s）、异步探测进度（内存态，管理页轮询，`ProbeStatus`）。M5 新增 `health.go`：`HealthChecker` 定时巡检 active/down 渠道（经 Manager 取真实 key 发最小请求，避免假 key 401 误判），连续失败 N 次→down、成功 1 次→恢复 active。
+- `internal/channel`：协议自动识别（GET /v1/models→openai、POST /v1/messages→anthropic、POST /v1/responses→responses；**探测失败时错误信息带各协议证据**：状态码/网络错误+响应体截断，M6）、模型列表同步、**能力标注（默认不探测**：`probe_capabilities` 配置或渠道页「探测能力」按钮开启；默认写入保守值 system/tools 开、vision/json_mode 关，模型管理页可手动调整——避免免费模型配额被 100 次探测打爆）、多 key 轮换（random/round_robin）+ 冷却（时长可配 `SetCooldown`，默认 60s）、异步探测进度（内存态，管理页轮询，`ProbeStatus`，`StartCapabilitiesProbe`/`ProbeCapabilitiesOnly` 供手动触发）。M5 新增 `health.go`：`HealthChecker` 定时巡检 active/down 渠道（经 Manager 取真实 key 发最小请求，避免假 key 401 误判），连续失败 N 次→down、成功 1 次→恢复 active。
 - `internal/protocol`：IR 定义（`ChatRequest`/`Message`/`ChatResponse`/`StreamEvent` 等，按 REQUIREMENTS §2.3.2）+ 三协议解析/序列化/流式翻译：
   - `openai.go`：Chat 入口解析与出口序列化 + `OpenAIStreamParser`（上游流解析，tool_calls 按 index 累积）+ `OpenAIChatStreamWriter`（出口流编码，`[DONE]` 收尾）；
   - `anthropic.go`：Messages 入口解析（system 多形态/tool_use/tool_result/image）与出口序列化（tool_use 块、stop_reason 映射）+ `AnthropicStreamWriter`（message_start/content_block_start/delta/stop/message_delta/message_stop 状态机）；
@@ -28,7 +28,7 @@
 ## M2 关键决策
 
 - 渠道 `type`：创建时默认 `auto`（自动探测）；探测成功后写回实际类型；失败保留 auto 供手动指定类型重试（编辑时改类型/base_url 自动触发重探测）。
-- 能力探测对每个模型发 4 次最小调用（max_tokens=1），2xx 视为支持；结果可手动覆盖（`capability_override` 记录覆盖字段）。
+- **能力探测默认关闭**（M6 起）：拉完模型列表直接以保守默认值入库（system/tools 开、vision/json_mode 关），模型管理页手动勾选调整；需要自动探测时配置 `probe_capabilities: true` 或渠道页「探测能力」按钮（`StartCapabilitiesProbe`）。原因：免费模型 RPM 仅 2~60，25 模型 × 4 项 ≈ 100 次探测会直接打爆配额。
 - key 只存加密值；页面展示掩码（前 4 + … + 后 4）；编辑渠道时填新 key 才替换，留空保留。
 - gorilla/sessions v1.4.0 默认 `Secure=true`，明文 HTTP 下 cookie 不生效——已加 `session_secure` 配置默认关。
 

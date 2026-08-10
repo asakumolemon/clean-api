@@ -72,6 +72,9 @@
             <form method="post" action="/admin/channels/{{.ID}}/resync" style="display:inline">
               <button type="submit" class="secondary outline">重探测</button>
             </form>
+            <form method="post" action="/admin/channels/{{.ID}}/probe-caps" style="display:inline">
+              <button type="submit" class="secondary outline">探测能力</button>
+            </form>
             <form method="post" action="/admin/channels/{{.ID}}/delete" style="display:inline"
               onsubmit="return confirm('确定删除渠道 {{.Name}} 及其模型？');">
               <button type="submit" class="secondary outline">删除</button>

@@ -62,6 +62,7 @@ func (s *Server) Mount(r chi.Router) {
 			r.Post("/channels/{id}/edit", s.updateChannel)
 			r.Post("/channels/{id}/toggle", s.toggleChannel)
 			r.Post("/channels/{id}/resync", s.resyncChannel)
+			r.Post("/channels/{id}/probe-caps", s.probeCapsChannel)
 			r.Post("/channels/{id}/delete", s.deleteChannel)
 			r.Get("/models", s.modelsPage)
 			r.Post("/models/{id}/toggle", s.toggleModel)

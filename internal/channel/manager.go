@@ -42,6 +42,7 @@ type Manager struct {
 	enc      *crypto.Cipher
 	client   *http.Client
 	cooldown time.Duration // 单 key 冷却时长（MarkKeyFailed 用，默认 DefaultCooldown）
+	probeCaps bool         // 是否对每个模型发最小试调用探测能力（默认关，config probe_capabilities）
 
 	mu     sync.Mutex
 	probes map[int64]*ProbeStatus
@@ -66,6 +67,18 @@ func (m *Manager) SetCooldown(d time.Duration) {
 	if d > 0 {
 		m.cooldown = d
 	}
+}
+
+// SetProbeCapabilities 开关能力探测（M6：默认关闭，避免免费模型配额被打爆；
+// 需要时由配置 probe_capabilities 开启，或渠道页手动触发）。
+func (m *Manager) SetProbeCapabilities(b bool) {
+	m.probeCaps = b
+}
+
+// defaultCapabilities 能力探测关闭时的保守默认值：
+// 主流模型普遍支持 system 与工具调用，视觉/JSON mode 默认关（可在模型管理页手动调整）。
+func defaultCapabilities(chType string) store.Capabilities {
+	return store.Capabilities{System: true, Tools: true}
 }
 
 // --- 探测进度 ---
@@ -153,12 +166,24 @@ func (m *Manager) ProbeChannel(ctx context.Context, chID int64) error {
 		return err
 	}
 
-	// 3. 能力探测（每个模型最小试调用）
-	m.setStep(chID, "探测模型能力…")
-	caps := make(map[string]store.Capabilities, len(names))
-	for _, name := range names {
-		m.setStep(chID, "探测能力 "+name)
-		caps[name] = m.probeCapabilities(ctx, chType, ch.BaseURL, key, name)
+	// 3. 能力：默认按渠道类型给保守值（不消耗上游配额）；
+	//    probe_capabilities 开启时逐个最小试调用探测。
+	var caps map[string]store.Capabilities
+	capNote := "能力使用默认值，可在模型管理页调整"
+	if m.probeCaps {
+		m.setStep(chID, "探测模型能力…")
+		caps = make(map[string]store.Capabilities, len(names))
+		for _, name := range names {
+			m.setStep(chID, "探测能力 "+name)
+			caps[name] = m.probeCapabilities(ctx, chType, ch.BaseURL, key, name)
+		}
+		capNote = "已完成能力探测"
+	} else {
+		def := defaultCapabilities(chType)
+		caps = make(map[string]store.Capabilities, len(names))
+		for _, name := range names {
+			caps[name] = def
+		}
 	}
 
 	added, err := m.store.SyncModels(ctx, chID, caps, time.Now().UTC())
@@ -172,13 +197,80 @@ func (m *Manager) ProbeChannel(ctx context.Context, chID int64) error {
 		st.Failed = false
 		st.Type = chType
 		st.ModelCount = len(names)
-		st.Message = "探测完成：识别为 " + chType + "，同步 " + itoa(len(names)) + " 个模型（新增 " + itoa(added) + "）"
+		st.Message = "探测完成：识别为 " + chType + "，同步 " + itoa(len(names)) + " 个模型（新增 " + itoa(added) + "），" + capNote
 	})
 	return nil
 }
 
 func itoa(n int) string {
 	return strconv.Itoa(n)
+}
+
+// StartCapabilitiesProbe 异步触发该渠道全部模型的能力探测（渠道页手动按钮，M6）。
+// 同一渠道正在探测中时忽略重复触发。
+func (m *Manager) StartCapabilitiesProbe(chID int64) {
+	m.mu.Lock()
+	if st := m.probes[chID]; st != nil && st.Running {
+		m.mu.Unlock()
+		return
+	}
+	m.probes[chID] = &ProbeStatus{ChannelID: chID, Running: true, Step: "排队中…", UpdatedAt: time.Now().UTC()}
+	m.mu.Unlock()
+
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), ProbeTimeout)
+		defer cancel()
+		if err := m.ProbeCapabilitiesOnly(ctx, chID); err != nil {
+			slog.Error("能力探测失败", "channel_id", chID, "error", err)
+			m.updateStatus(chID, func(st *ProbeStatus) {
+				st.Running = false
+				st.Done = true
+				st.Failed = true
+				st.Message = err.Error()
+			})
+		}
+	}()
+}
+
+// ProbeCapabilitiesOnly 仅对该渠道全部模型执行能力探测（读取库中已有模型，逐个最小试调用）。
+func (m *Manager) ProbeCapabilitiesOnly(ctx context.Context, chID int64) error {
+	m.setStep(chID, "探测模型能力…")
+	ch, err := m.store.GetChannel(ctx, chID)
+	if err != nil {
+		return err
+	}
+	key, _, err := m.SelectKey(ctx, ch)
+	if err != nil {
+		return err
+	}
+	models, err := m.store.ListModelsByChannel(ctx, chID)
+	if err != nil {
+		return err
+	}
+	if len(models) == 0 {
+		m.updateStatus(chID, func(st *ProbeStatus) {
+			st.Running = false
+			st.Done = true
+			st.Failed = false
+			st.Message = "渠道暂无模型，请先同步模型列表"
+		})
+		return nil
+	}
+	caps := make(map[string]store.Capabilities, len(models))
+	for _, md := range models {
+		m.setStep(chID, "探测能力 "+md.Name)
+		caps[md.Name] = m.probeCapabilities(ctx, ch.Type, ch.BaseURL, key, md.Name)
+	}
+	if _, err := m.store.SyncModels(ctx, chID, caps, time.Now().UTC()); err != nil {
+		return err
+	}
+	m.updateStatus(chID, func(st *ProbeStatus) {
+		st.Running = false
+		st.Done = true
+		st.Failed = false
+		st.Message = "能力探测完成：" + itoa(len(models)) + " 个模型已更新"
+	})
+	return nil
 }
 
 // SelectKey 按渠道策略选择一个未冷却的 key 并解密，返回明文与 key ID。
