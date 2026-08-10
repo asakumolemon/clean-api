@@ -20,6 +20,15 @@
   .flash { margin-bottom: 1rem; }
   .mono { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; word-break: break-all; }
   .plaintext-token { background: var(--pico-card-background-color); border: 1px solid var(--pico-muted-border-color); padding: .75rem; margin: .5rem 0; }
+  /* 自定义网格：不用 Pico 内置 .grid（其 minmax(0%,1fr) 在部分浏览器下会塌缩成极窄列，
+     导致标签文字逐字竖排、元素重叠）。minmax 带 200px 下限，窄屏自动换行成单列。 */
+  .form-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 0 1rem;
+    align-items: end;
+    margin-bottom: var(--pico-spacing);
+  }
 </style>
 {{block "extra_head" .}}{{end}}
 </head>

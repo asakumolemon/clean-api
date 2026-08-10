@@ -8,7 +8,7 @@
     <article>
       <details open>
         <summary role="button" class="secondary outline">筛选</summary>
-        <form method="get" action="/admin/logs" class="grid">
+        <form method="get" action="/admin/logs" class="form-grid">
           <label>模型
             <input type="text" name="model" value="{{.Filter.Model}}" placeholder="模型名关键字">
           </label>
@@ -62,7 +62,7 @@
       </tbody>
     </table>
 
-    <nav class="grid">
+    <nav class="form-grid">
       <div>
         {{if gt .Page 1}}
         <a role="button" class="outline secondary" href="/admin/logs?model={{.Filter.Model}}&token={{.Filter.Token}}&status={{.Filter.Status}}&page={{sub .Page 1}}">上一页</a>

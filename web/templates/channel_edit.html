@@ -6,7 +6,7 @@
     {{template "flash" .}}
 
     <article>
-      <form method="post" action="/admin/channels/{{.Ch.ID}}/edit" class="grid">
+      <form method="post" action="/admin/channels/{{.Ch.ID}}/edit" class="form-grid">
         <label>名称
           <input name="name" type="text" value="{{.Ch.Name}}">
         </label>
