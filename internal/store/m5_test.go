@@ -208,3 +208,23 @@ func TestImportInvalid(t *testing.T) {
 		t.Error("导入失败不应破坏现有数据")
 	}
 }
+
+// CountEncryptedKeys：统计 enc: 前缀的密文数量。
+func TestCountEncryptedKeys(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	chID, _ := s.CreateChannel(ctx, "渠道", "openai", "https://example.com")
+	if n, _ := s.CountEncryptedKeys(ctx); n != 0 {
+		t.Fatalf("初始应为 0，got %d", n)
+	}
+	_, _ = s.AddChannelKey(ctx, chID, "enc:abc")
+	_, _ = s.AddChannelKey(ctx, chID, "plain-key")
+	_, _ = s.AddChannelKey(ctx, chID, "enc:def")
+	n, err := s.CountEncryptedKeys(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Errorf("应为 2 个加密 key，got %d", n)
+	}
+}

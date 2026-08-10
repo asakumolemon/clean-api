@@ -163,6 +163,14 @@ func (s *Store) SetKeyCooldown(ctx context.Context, keyID int64, until *time.Tim
 	return err
 }
 
+// CountEncryptedKeys 统计已加密存储的 key 数量（启动时检测：存在密文但未配置
+// GATEWAY_ENC_KEY 时说明会解密失败，需醒目告警）。
+func (s *Store) CountEncryptedKeys(ctx context.Context) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM channel_keys WHERE key_enc LIKE 'enc:%'`).Scan(&n)
+	return n, err
+}
+
 func scanChannel(row *sql.Row) (*Channel, error) {
 	var c Channel
 	if err := scanChannelRow(row, &c); err != nil {

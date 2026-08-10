@@ -18,15 +18,16 @@ import (
 
 // Server 管理面 handler 集合。
 type Server struct {
-	store  *store.Store
-	auth   *auth.SessionManager
-	chm    *channel.Manager
-	router *router.Router
-	tpl    *template.Template
+	store   *store.Store
+	auth    *auth.SessionManager
+	chm     *channel.Manager
+	router  *router.Router
+	version string
+	tpl     *template.Template
 }
 
-// New 解析内嵌模板并构造管理面服务。
-func New(s *store.Store, am *auth.SessionManager, chm *channel.Manager, rt *router.Router) (*Server, error) {
+// New 解析内嵌模板并构造管理面服务。version 展示在侧栏（-ldflags 注入）。
+func New(s *store.Store, am *auth.SessionManager, chm *channel.Manager, rt *router.Router, version string) (*Server, error) {
 	tpl, err := template.New("").Funcs(template.FuncMap{
 		"add": func(a, b int) int { return a + b },
 		"sub": func(a, b int) int { return a - b },
@@ -34,7 +35,10 @@ func New(s *store.Store, am *auth.SessionManager, chm *channel.Manager, rt *rout
 	if err != nil {
 		return nil, err
 	}
-	return &Server{store: s, auth: am, chm: chm, router: rt, tpl: tpl}, nil
+	if version == "" {
+		version = "dev"
+	}
+	return &Server{store: s, auth: am, chm: chm, router: rt, version: version, tpl: tpl}, nil
 }
 
 // Mount 注册 /admin 路由。
@@ -88,6 +92,7 @@ func (s *Server) static() http.Handler {
 
 // render 渲染指定模板。
 func (s *Server) render(w http.ResponseWriter, name string, data map[string]any) {
+	data["Version"] = s.version // 侧栏版本展示
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := s.tpl.ExecuteTemplate(w, name, data); err != nil {
 		http.Error(w, "模板渲染失败: "+err.Error(), http.StatusInternalServerError)

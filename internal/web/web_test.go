@@ -63,7 +63,7 @@ func newTestWeb(t *testing.T, up *httptest.Server) (*httptest.Server, *store.Sto
 	chm := channel.NewManager(st, enc, 10*time.Second)
 	rt := router.New(st, chm, "random", 10*time.Second, nil)
 
-	srv, err := New(st, am, chm, rt)
+	srv, err := New(st, am, chm, rt, "test")
 	if err != nil {
 		t.Fatal(err)
 	}

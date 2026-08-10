@@ -20,10 +20,11 @@ type Config struct {
 	EncKey            string            `json:"enc_key"`                 // 上游 API key 的 AES-GCM 加密密钥（M2 起使用）
 	SessionSecure     bool              `json:"session_secure"`          // 管理面 cookie 加 Secure（仅 HTTPS 时开启，默认关）
 	RoutingStrategy   string            `json:"routing_strategy"`        // 模型→渠道选择策略：random|round_robin（默认 random，M3 起使用）
-	HealthCheckEnabled bool             `json:"health_check_enabled"`    // 渠道健康检查开关（默认开，M5 起使用）
-	HealthCheckIntervalSec int          `json:"health_check_interval_seconds"` // 健康检查间隔秒，默认 300
-	HealthCheckMaxFailures int          `json:"health_check_max_failures"`     // 连续失败 N 次标记 down，默认 3
-	ModelRedirects    map[string]string `json:"model_redirects"`         // 全局模型重定向：请求模型名 → 实际模型名（M5 起使用）
+	HealthCheckEnabled bool              `json:"health_check_enabled"`    // 渠道健康检查开关（默认开，M5 起使用）
+	HealthCheckIntervalSec int           `json:"health_check_interval_seconds"` // 健康检查间隔秒，默认 300
+	HealthCheckMaxFailures int           `json:"health_check_max_failures"`     // 连续失败 N 次标记 down，默认 3
+	KeyCooldownSec    int               `json:"key_cooldown_seconds"`     // 单 key 冷却时长秒（429/401 后，默认 60，M6 起使用）
+	ModelRedirects    map[string]string `json:"model_redirects"`          // 全局模型重定向：请求模型名 → 实际模型名（M5 起使用）
 }
 
 // Load 从 JSON 文件读取配置并叠加默认值与环境变量覆盖。
@@ -71,6 +72,9 @@ func (c *Config) setDefaults() {
 	if c.HealthCheckMaxFailures == 0 {
 		c.HealthCheckMaxFailures = 3
 	}
+	if c.KeyCooldownSec == 0 {
+		c.KeyCooldownSec = 60
+	}
 }
 
 // applyEnv 用 GATEWAY_* 环境变量覆盖配置项。
@@ -111,5 +115,8 @@ func (c *Config) applyEnv() {
 	}
 	if v := get("HEALTH_CHECK_MAX_FAILURES"); v != "" {
 		fmt.Sscanf(v, "%d", &c.HealthCheckMaxFailures)
+	}
+	if v := get("KEY_COOLDOWN_SECONDS"); v != "" {
+		fmt.Sscanf(v, "%d", &c.KeyCooldownSec)
 	}
 }

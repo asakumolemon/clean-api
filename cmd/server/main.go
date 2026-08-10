@@ -5,12 +5,15 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"flag"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"syscall"
 	"time"
 
@@ -26,13 +29,22 @@ import (
 	"api-gateway/internal/web"
 )
 
+// version 构建版本（-ldflags "-X main.version=..." 注入，默认 dev）。
+var version = "dev"
+
 var (
 	configPath = flag.String("config", "config.json", "配置文件路径（json）")
 	adminPW    = flag.String("admin-password", "", "首启管理员初始密码（也可用环境变量 GATEWAY_ADMIN_PASSWORD）")
+	showVer    = flag.Bool("version", false, "打印版本信息后退出")
 )
 
 func main() {
 	flag.Parse()
+
+	if *showVer {
+		fmt.Printf("api-gateway %s\n", version)
+		return
+	}
 
 	cfg, err := config.Load(*configPath)
 	if err != nil {
@@ -55,6 +67,13 @@ func main() {
 	}
 	defer st.Close()
 
+	// 密钥缺失告警（M6）：库中已有加密 key 但未配置 GATEWAY_ENC_KEY → 这些 key 将无法解密使用。
+	if cfg.EncKey == "" {
+		if n, err := st.CountEncryptedKeys(context.Background()); err == nil && n > 0 {
+			slog.Error("检测到数据库中已有加密的渠道 key 但未配置 GATEWAY_ENC_KEY：这些 key 将无法解密，请求会失败。请配置与加密时相同的密钥", "加密 key 数", n)
+		}
+	}
+
 	if err := ensureAdmin(context.Background(), st, cfg, *adminPW); err != nil {
 		fatal("初始化管理员失败", err)
 	}
@@ -69,10 +88,12 @@ func main() {
 		fatal("初始化加密失败", err)
 	}
 	chm := channel.NewManager(st, enc, time.Duration(cfg.DefaultTimeoutSec)*time.Second)
+	chm.SetCooldown(time.Duration(cfg.KeyCooldownSec) * time.Second)
 	rt := router.New(st, chm, cfg.RoutingStrategy, time.Duration(cfg.DefaultTimeoutSec)*time.Second, cfg.ModelRedirects)
 
 	r := chi.NewRouter()
-	adminWeb, err := web.New(st, sessions, chm, rt)
+	r.Use(recoverMW)
+	adminWeb, err := web.New(st, sessions, chm, rt, version)
 	if err != nil {
 		fatal("加载管理面模板失败", err)
 	}
@@ -199,4 +220,25 @@ func newLogger(level string) *slog.Logger {
 func fatal(msg string, err error) {
 	slog.Error(msg, "error", err)
 	os.Exit(1)
+}
+
+// recoverMW panic 恢复中间件（M6）：记录堆栈日志，未写响应头时返回 500 JSON，
+// 避免单个请求 panic 导致整个进程崩溃。
+func recoverMW(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if rec := recover(); rec != nil {
+				slog.Error("请求处理 panic，已恢复", "panic", rec, "path", r.URL.Path, "method", r.Method, "stack", string(debug.Stack()))
+				w.Header().Set("Content-Type", "application/json; charset=utf-8")
+				w.WriteHeader(http.StatusInternalServerError)
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"error": map[string]any{
+						"message": "internal server error",
+						"type":    "internal_error",
+					},
+				})
+			}
+		}()
+		next.ServeHTTP(w, r)
+	})
 }

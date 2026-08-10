@@ -20,7 +20,7 @@ import (
 const (
 	ProbeTimeout   = 5 * time.Minute  // 单渠道完整探测总超时
 	RequestTimeout = 30 * time.Second // 单次探测请求超时
-	Cooldown       = 60 * time.Second // 单 key 冷却时长（429/401 后）
+	DefaultCooldown = 60 * time.Second // 单 key 默认冷却时长（429/401 后，M6 起可配）
 )
 
 // ProbeStatus 探测进度（内存态，供管理页轮询渲染）。
@@ -38,9 +38,10 @@ type ProbeStatus struct {
 
 // Manager 渠道探测与 key 管理。
 type Manager struct {
-	store  *store.Store
-	enc    *crypto.Cipher
-	client *http.Client
+	store    *store.Store
+	enc      *crypto.Cipher
+	client   *http.Client
+	cooldown time.Duration // 单 key 冷却时长（MarkKeyFailed 用，默认 DefaultCooldown）
 
 	mu     sync.Mutex
 	probes map[int64]*ProbeStatus
@@ -51,11 +52,19 @@ type Manager struct {
 
 func NewManager(st *store.Store, enc *crypto.Cipher, timeout time.Duration) *Manager {
 	return &Manager{
-		store:  st,
-		enc:    enc,
-		client: &http.Client{Timeout: timeout},
-		probes: make(map[int64]*ProbeStatus),
-		rr:     make(map[int64]int),
+		store:    st,
+		enc:      enc,
+		client:   &http.Client{Timeout: timeout},
+		cooldown: DefaultCooldown,
+		probes:   make(map[int64]*ProbeStatus),
+		rr:       make(map[int64]int),
+	}
+}
+
+// SetCooldown 设置 key 冷却时长（M6：来自配置 key_cooldown_seconds）。
+func (m *Manager) SetCooldown(d time.Duration) {
+	if d > 0 {
+		m.cooldown = d
 	}
 }
 
@@ -212,7 +221,7 @@ func (m *Manager) SelectKey(ctx context.Context, ch *store.Channel) (string, int
 
 // MarkKeyFailed 将 key 标记冷却（429/401 时调用，M3 路由使用）。
 func (m *Manager) MarkKeyFailed(ctx context.Context, keyID int64) {
-	until := time.Now().UTC().Add(Cooldown)
+	until := time.Now().UTC().Add(m.cooldown)
 	_ = m.store.SetKeyCooldown(ctx, keyID, &until)
 }
 
