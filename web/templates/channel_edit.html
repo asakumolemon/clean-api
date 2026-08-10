@@ -1,0 +1,44 @@
+{{template "head" .}}
+<div class="layout">
+  {{template "sidebar" .}}
+  <main class="main">
+    <h1>编辑渠道</h1>
+    {{template "flash" .}}
+
+    <article>
+      <form method="post" action="/admin/channels/{{.Ch.ID}}/edit" class="grid">
+        <label>名称
+          <input name="name" type="text" value="{{.Ch.Name}}">
+        </label>
+        <label>Base URL
+          <input name="base_url" type="url" value="{{.Ch.BaseURL}}">
+        </label>
+        <label>类型
+          <select name="type">
+            <option value="auto" {{if eq .Ch.Type "auto"}}selected{{end}}>auto（自动探测）</option>
+            <option value="openai" {{if eq .Ch.Type "openai"}}selected{{end}}>openai</option>
+            <option value="anthropic" {{if eq .Ch.Type "anthropic"}}selected{{end}}>anthropic</option>
+            <option value="responses" {{if eq .Ch.Type "responses"}}selected{{end}}>responses</option>
+          </select>
+        </label>
+        <label>权重
+          <input name="weight" type="number" value="{{.Ch.Weight}}" min="1">
+        </label>
+        <label>key 轮换策略
+          <select name="balance_strategy">
+            <option value="random" {{if eq .Ch.BalanceStrategy "random"}}selected{{end}}>random（随机）</option>
+            <option value="round_robin" {{if eq .Ch.BalanceStrategy "round_robin"}}selected{{end}}>round_robin（顺序）</option>
+          </select>
+        </label>
+        <label>新增/替换 API key（每行一个，留空保留现有）
+          <textarea name="api_keys" rows="3" placeholder="sk-xxx"></textarea>
+        </label>
+        <p class="muted" style="grid-column: 1 / -1;">修改类型或 base_url 后会自动重新探测。</p>
+        <button type="submit">保存</button>
+        <a href="/admin/channels" role="button" class="secondary outline">返回</a>
+      </form>
+    </article>
+  </main>
+</div>
+</body>
+</html>

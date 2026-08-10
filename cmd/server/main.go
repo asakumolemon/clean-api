@@ -18,7 +18,9 @@ import (
 
 	"api-gateway/internal/api"
 	"api-gateway/internal/auth"
+	"api-gateway/internal/channel"
 	"api-gateway/internal/config"
+	"api-gateway/internal/crypto"
 	"api-gateway/internal/store"
 	"api-gateway/internal/web"
 )
@@ -56,13 +58,19 @@ func main() {
 		fatal("初始化管理员失败", err)
 	}
 
-	sessions, err := auth.NewSessionManager(cfg.SessionSecret)
+	sessions, err := auth.NewSessionManager(cfg.SessionSecret, cfg.SessionSecure)
 	if err != nil {
 		fatal("初始化会话失败", err)
 	}
 
+	enc, err := crypto.New(cfg.EncKey)
+	if err != nil {
+		fatal("初始化加密失败", err)
+	}
+	chm := channel.NewManager(st, enc, time.Duration(cfg.DefaultTimeoutSec)*time.Second)
+
 	r := chi.NewRouter()
-	adminWeb, err := web.New(st, sessions)
+	adminWeb, err := web.New(st, sessions, chm)
 	if err != nil {
 		fatal("加载管理面模板失败", err)
 	}

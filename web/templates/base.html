@@ -21,6 +21,7 @@
   .mono { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; word-break: break-all; }
   .plaintext-token { background: var(--pico-card-background-color); border: 1px solid var(--pico-muted-border-color); padding: .75rem; margin: .5rem 0; }
 </style>
+{{block "extra_head" .}}{{end}}
 </head>
 <body>
 {{end}}
@@ -30,6 +31,8 @@
   <h1>智能 API 网关</h1>
   <nav>
     <a href="/admin/" {{if eq .Active "dashboard"}}class="active"{{end}}>仪表盘</a>
+    <a href="/admin/channels" {{if eq .Active "channels"}}class="active"{{end}}>渠道管理</a>
+    <a href="/admin/models" {{if eq .Active "models"}}class="active"{{end}}>模型管理</a>
     <a href="/admin/tokens" {{if eq .Active "tokens"}}class="active"{{end}}>令牌管理</a>
     <a href="/admin/logout">退出</a>
   </nav>

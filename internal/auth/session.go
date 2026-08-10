@@ -15,8 +15,9 @@ type SessionManager struct {
 }
 
 // NewSessionManager 创建会话管理器。secret 为空时自动生成随机密钥
-//（此时重启服务后所有登录态失效）。
-func NewSessionManager(secret string) (*SessionManager, error) {
+// （此时重启服务后所有登录态失效）。secure 为 true 时 cookie 加 Secure
+// 属性（仅 HTTPS 生效）；明文 HTTP 部署必须为 false，否则浏览器不发送 cookie。
+func NewSessionManager(secret string, secure bool) (*SessionManager, error) {
 	if secret == "" {
 		gen, err := GenerateToken()
 		if err != nil {
@@ -27,6 +28,7 @@ func NewSessionManager(secret string) (*SessionManager, error) {
 	cs := sessions.NewCookieStore([]byte(secret))
 	cs.Options.HttpOnly = true
 	cs.Options.SameSite = http.SameSiteLaxMode
+	cs.Options.Secure = secure
 	return &SessionManager{store: cs}, nil
 }
 

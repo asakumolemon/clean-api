@@ -1,0 +1,89 @@
+{{define "extra_head"}}{{if .Polling}}<meta http-equiv="refresh" content="5">{{end}}{{end}}
+{{template "head" .}}
+<div class="layout">
+  {{template "sidebar" .}}
+  <main class="main">
+    <h1>渠道管理</h1>
+    {{template "flash" .}}
+
+    <article>
+      <h3>添加渠道</h3>
+      <p class="muted">只需填写名称、base_url 与 API key，协议类型与模型列表自动探测。</p>
+      <form method="post" action="/admin/channels" class="grid">
+        <label>名称
+          <input name="name" type="text" placeholder="例如：deepseek 主号">
+        </label>
+        <label>Base URL
+          <input name="base_url" type="url" placeholder="https://api.deepseek.com">
+        </label>
+        <label>类型（auto = 自动探测）
+          <select name="type">
+            <option value="auto">auto（自动探测）</option>
+            <option value="openai">openai</option>
+            <option value="anthropic">anthropic</option>
+            <option value="responses">responses</option>
+          </select>
+        </label>
+        <label>API key（每行一个）
+          <textarea name="api_keys" rows="3" placeholder="sk-xxx"></textarea>
+        </label>
+        <label>权重
+          <input name="weight" type="number" value="1" min="1">
+        </label>
+        <label>key 轮换策略
+          <select name="balance_strategy">
+            <option value="random">random（随机）</option>
+            <option value="round_robin">round_robin（顺序）</option>
+          </select>
+        </label>
+        <button type="submit" style="grid-column: 1 / -1;">添加并探测</button>
+      </form>
+    </article>
+
+    <table>
+      <thead>
+        <tr><th>ID</th><th>名称</th><th>类型</th><th>状态</th><th>Base URL</th><th>Keys</th><th>模型数</th><th>探测状态</th><th>操作</th></tr>
+      </thead>
+      <tbody>
+        {{range .Channels}}
+        <tr>
+          <td>{{.ID}}</td>
+          <td>{{.Name}}</td>
+          <td>{{if eq .Type "auto"}}待探测{{else}}{{.Type}}{{end}}</td>
+          <td>{{if eq .Status "active"}}启用{{else if eq .Status "down"}}down{{else}}禁用{{end}}</td>
+          <td class="mono">{{.BaseURL}}</td>
+          <td>
+            {{range .Keys}}
+            <div class="mono">{{.Masked}}{{if .InCooldown}} <small class="muted">冷却至 {{.CooldownUntil}}</small>{{end}}</div>
+            {{else}}-{{end}}
+          </td>
+          <td>{{.ModelCount}}</td>
+          <td>
+            {{if .Probing}}<span style="color: var(--pico-primary);">探测中… {{.ProbeStep}}</span>
+            {{else if .ProbeFail}}<span style="color: var(--pico-del-color);">探测失败</span>
+            {{else if .ProbeDone}}{{.ProbeMsg}}
+            {{else}}未探测{{end}}
+          </td>
+          <td>
+            <a href="/admin/channels/{{.ID}}/edit" role="button" class="outline secondary">编辑</a>
+            <form method="post" action="/admin/channels/{{.ID}}/toggle" style="display:inline">
+              <button type="submit" class="secondary outline">{{if eq .Status "disabled"}}启用{{else}}禁用{{end}}</button>
+            </form>
+            <form method="post" action="/admin/channels/{{.ID}}/resync" style="display:inline">
+              <button type="submit" class="secondary outline">重探测</button>
+            </form>
+            <form method="post" action="/admin/channels/{{.ID}}/delete" style="display:inline"
+              onsubmit="return confirm('确定删除渠道 {{.Name}} 及其模型？');">
+              <button type="submit" class="secondary outline">删除</button>
+            </form>
+          </td>
+        </tr>
+        {{else}}
+        <tr><td colspan="9">暂无渠道，请在上方添加</td></tr>
+        {{end}}
+      </tbody>
+    </table>
+  </main>
+</div>
+</body>
+</html>

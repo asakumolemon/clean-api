@@ -66,10 +66,14 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	users, _ := s.store.CountUsers(ctx)
 	tokens, _ := s.store.CountTokens(ctx)
+	channels, _ := s.store.CountChannels(ctx)
+	models, _ := s.store.CountModels(ctx)
 	s.render(w, "dashboard.html", baseData("仪表盘 · 智能 API 网关", "dashboard", map[string]any{
-		"Flash":  s.readFlash(w, r),
-		"Users":  users,
-		"Tokens": tokens,
+		"Flash":    s.readFlash(w, r),
+		"Users":    users,
+		"Tokens":   tokens,
+		"Channels": channels,
+		"Models":   models,
 	}))
 }
 

@@ -20,7 +20,7 @@ func newTestSrv(t *testing.T) (*Server, *store.Store, *auth.SessionManager) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { s.Close() })
-	am, err := auth.NewSessionManager("test-secret")
+	am, err := auth.NewSessionManager("test-secret", false)
 	if err != nil {
 		t.Fatal(err)
 	}

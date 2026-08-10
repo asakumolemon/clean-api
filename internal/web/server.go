@@ -10,6 +10,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"api-gateway/internal/auth"
+	"api-gateway/internal/channel"
 	"api-gateway/internal/store"
 	webassets "api-gateway/web"
 )
@@ -18,16 +19,17 @@ import (
 type Server struct {
 	store *store.Store
 	auth  *auth.SessionManager
+	chm   *channel.Manager
 	tpl   *template.Template
 }
 
 // New 解析内嵌模板并构造管理面服务。
-func New(s *store.Store, am *auth.SessionManager) (*Server, error) {
+func New(s *store.Store, am *auth.SessionManager, chm *channel.Manager) (*Server, error) {
 	tpl, err := template.ParseFS(webassets.FS, "templates/*.html")
 	if err != nil {
 		return nil, err
 	}
-	return &Server{store: s, auth: am, tpl: tpl}, nil
+	return &Server{store: s, auth: am, chm: chm, tpl: tpl}, nil
 }
 
 // Mount 注册 /admin 路由。
@@ -45,6 +47,17 @@ func (s *Server) Mount(r chi.Router) {
 			r.Post("/tokens", s.createToken)
 			r.Post("/tokens/{id}/toggle", s.toggleToken)
 			r.Post("/tokens/{id}/revoke", s.revokeToken)
+			r.Get("/channels", s.channelsPage)
+			r.Post("/channels", s.createChannel)
+			r.Get("/channels/{id}/edit", s.channelEditPage)
+			r.Post("/channels/{id}/edit", s.updateChannel)
+			r.Post("/channels/{id}/toggle", s.toggleChannel)
+			r.Post("/channels/{id}/resync", s.resyncChannel)
+			r.Post("/channels/{id}/delete", s.deleteChannel)
+			r.Get("/models", s.modelsPage)
+			r.Post("/models/{id}/toggle", s.toggleModel)
+			r.Post("/models/{id}/alias", s.setModelAlias)
+			r.Post("/models/{id}/override", s.overrideModel)
 		})
 	})
 }

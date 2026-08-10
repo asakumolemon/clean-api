@@ -9,15 +9,16 @@ import (
 
 // Config 网关自身配置。
 type Config struct {
-	Addr              string `json:"addr"`                 // HTTP 监听地址
-	DBPath            string `json:"db_path"`              // SQLite 文件路径
-	SessionSecret     string `json:"session_secret"`       // 管理面 session 签名密钥，缺省随机生成（重启后失效）
-	LogLevel          string `json:"log_level"`            // debug|info|warn|error
-	LogRetentionDays  int    `json:"log_retention_days"`   // 请求日志保留天数，默认 7
+	Addr              string `json:"addr"`                    // HTTP 监听地址
+	DBPath            string `json:"db_path"`                 // SQLite 文件路径
+	SessionSecret     string `json:"session_secret"`          // 管理面 session 签名密钥，缺省随机生成（重启后失效）
+	LogLevel          string `json:"log_level"`               // debug|info|warn|error
+	LogRetentionDays  int    `json:"log_retention_days"`      // 请求日志保留天数，默认 7
 	DefaultTimeoutSec int    `json:"default_timeout_seconds"` // 上游请求默认超时，默认 120
-	AdminUsername     string `json:"admin_username"`       // 首次启动创建的管理员用户名
-	AdminPassword     string `json:"admin_password"`       // 首次启动创建的管理员密码（建议用环境变量，勿入库）
-	EncKey            string `json:"enc_key"`              // 上游 API key 的 AES-GCM 加密密钥（M2 起使用）
+	AdminUsername     string `json:"admin_username"`          // 首次启动创建的管理员用户名
+	AdminPassword     string `json:"admin_password"`          // 首次启动创建的管理员密码（建议用环境变量，勿入库）
+	EncKey            string `json:"enc_key"`                 // 上游 API key 的 AES-GCM 加密密钥（M2 起使用）
+	SessionSecure     bool   `json:"session_secure"`          // 管理面 cookie 加 Secure（仅 HTTPS 时开启，默认关）
 }
 
 // Load 从 JSON 文件读取配置并叠加默认值与环境变量覆盖。
@@ -81,5 +82,8 @@ func (c *Config) applyEnv() {
 	}
 	if v := get("ENC_KEY"); v != "" {
 		c.EncKey = v
+	}
+	if v := get("SESSION_SECURE"); v != "" {
+		c.SessionSecure = v == "1" || v == "true"
 	}
 }
