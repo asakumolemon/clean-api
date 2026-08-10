@@ -19,3 +19,6 @@ cookies.txt
 # 编辑器
 .idea/
 .vscode/
+
+# ZCode 工具运行数据
+.zcode/

@@ -21,6 +21,7 @@ import (
 	"api-gateway/internal/channel"
 	"api-gateway/internal/config"
 	"api-gateway/internal/crypto"
+	"api-gateway/internal/router"
 	"api-gateway/internal/store"
 	"api-gateway/internal/web"
 )
@@ -68,6 +69,7 @@ func main() {
 		fatal("初始化加密失败", err)
 	}
 	chm := channel.NewManager(st, enc, time.Duration(cfg.DefaultTimeoutSec)*time.Second)
+	rt := router.New(st, chm, cfg.RoutingStrategy, time.Duration(cfg.DefaultTimeoutSec)*time.Second)
 
 	r := chi.NewRouter()
 	adminWeb, err := web.New(st, sessions, chm)
@@ -76,9 +78,10 @@ func main() {
 	}
 	adminWeb.Mount(r)
 
-	apiServer := api.New(st)
+	apiServer := api.New(st, rt)
 	r.Route("/v1", func(r chi.Router) {
 		r.Use(sessions.APIAuth(st))
+		r.Get("/models", apiServer.Models)
 		r.Post("/chat/completions", apiServer.ChatCompletions)
 	})
 

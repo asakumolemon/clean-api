@@ -19,6 +19,7 @@ type Config struct {
 	AdminPassword     string `json:"admin_password"`          // 首次启动创建的管理员密码（建议用环境变量，勿入库）
 	EncKey            string `json:"enc_key"`                 // 上游 API key 的 AES-GCM 加密密钥（M2 起使用）
 	SessionSecure     bool   `json:"session_secure"`          // 管理面 cookie 加 Secure（仅 HTTPS 时开启，默认关）
+	RoutingStrategy   string `json:"routing_strategy"`        // 模型→渠道选择策略：random|round_robin（默认 random，M3 起使用）
 }
 
 // Load 从 JSON 文件读取配置并叠加默认值与环境变量覆盖。
@@ -57,6 +58,9 @@ func (c *Config) setDefaults() {
 	if c.AdminUsername == "" {
 		c.AdminUsername = "admin"
 	}
+	if c.RoutingStrategy == "" {
+		c.RoutingStrategy = "random"
+	}
 }
 
 // applyEnv 用 GATEWAY_* 环境变量覆盖配置项。
@@ -85,5 +89,8 @@ func (c *Config) applyEnv() {
 	}
 	if v := get("SESSION_SECURE"); v != "" {
 		c.SessionSecure = v == "1" || v == "true"
+	}
+	if v := get("ROUTING_STRATEGY"); v != "" {
+		c.RoutingStrategy = v
 	}
 }

@@ -141,6 +141,40 @@ func (s *Store) OverrideCapabilities(ctx context.Context, id int64, caps Capabil
 	return err
 }
 
+// ModelRoute 模型 → 渠道 的可路由条目（M3 路由分发用）。
+type ModelRoute struct {
+	ModelName       string // 渠道内真实模型名（按 name 或 alias 命中）
+	ChannelID       int64
+	ChannelType     string // openai | anthropic | responses | 厂商类型
+	BaseURL         string
+	BalanceStrategy string // random | round_robin（渠道内 key 轮换策略）
+}
+
+// ListChannelsByModel 返回提供指定模型的可用路由：
+// models.name 或 models.alias 命中、模型启用、渠道 active。
+// alias 为空的模型不会在按别名搜索时误命中。
+func (s *Store) ListChannelsByModel(ctx context.Context, name string) ([]ModelRoute, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT m.name, c.id, c.type, c.base_url, c.balance_strategy
+		FROM models m JOIN channels c ON c.id = m.channel_id
+		WHERE (m.name = ? OR (m.alias IS NOT NULL AND m.alias != '' AND m.alias = ?))
+		  AND m.enabled = 1 AND c.status = 'active'
+		ORDER BY c.id`, name, name)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	routes := []ModelRoute{}
+	for rows.Next() {
+		var r ModelRoute
+		if err := rows.Scan(&r.ModelName, &r.ChannelID, &r.ChannelType, &r.BaseURL, &r.BalanceStrategy); err != nil {
+			return nil, err
+		}
+		routes = append(routes, r)
+	}
+	return routes, rows.Err()
+}
+
 func scanModel(row *sql.Row) (*Model, error) {
 	var m Model
 	if err := scanModelRow(row, &m); err != nil {
