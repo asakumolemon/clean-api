@@ -1,0 +1,20 @@
+{{template "head" .}}
+<div class="layout">
+  {{template "sidebar" .}}
+  <main class="main">
+    <h1>仪表盘</h1>
+    {{template "flash" .}}
+    <div class="grid">
+      <article>
+        <h3>{{.Users}}</h3>
+        <p class="muted">用户</p>
+      </article>
+      <article>
+        <h3>{{.Tokens}}</h3>
+        <p class="muted">令牌</p>
+      </article>
+    </div>
+  </main>
+</div>
+</body>
+</html>

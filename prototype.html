@@ -1,0 +1,586 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>智能 API 网关 · 管理后台</title>
+    <!-- Pico.css 轻量级 CSS 框架 (无构建) -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
+    <style>
+        /* 自定义微调 */
+        body {
+            background: var(--pico-background-color);
+        }
+        .app-wrapper {
+            display: flex;
+            min-height: 100vh;
+        }
+        .sidebar {
+            width: 240px;
+            background: var(--pico-card-background-color);
+            border-right: 1px solid var(--pico-muted-border-color);
+            padding: 1.5rem 1rem;
+            flex-shrink: 0;
+            position: sticky;
+            top: 0;
+            height: 100vh;
+            overflow-y: auto;
+        }
+        .sidebar .brand {
+            font-size: 1.2rem;
+            font-weight: 600;
+            margin-bottom: 2rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        .sidebar nav ul {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+        }
+        .sidebar nav li {
+            margin-bottom: 0.25rem;
+        }
+        .sidebar nav a {
+            display: flex;
+            align-items: center;
+            gap: 0.6rem;
+            padding: 0.6rem 0.8rem;
+            border-radius: var(--pico-border-radius);
+            color: var(--pico-color);
+            text-decoration: none;
+            transition: background 0.15s;
+            font-size: 0.95rem;
+        }
+        .sidebar nav a:hover {
+            background: var(--pico-primary-focus);
+        }
+        .sidebar nav a.active {
+            background: var(--pico-primary-background);
+            color: var(--pico-primary-inverse);
+        }
+        .main-content {
+            flex: 1;
+            padding: 1.5rem 2rem;
+            overflow-y: auto;
+            height: 100vh;
+        }
+        .page-section {
+            display: none;
+        }
+        .page-section.active {
+            display: block;
+        }
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 1rem;
+            margin-bottom: 2rem;
+        }
+        .stat-card {
+            background: var(--pico-card-background-color);
+            padding: 1rem 1.2rem;
+            border-radius: var(--pico-border-radius);
+            box-shadow: var(--pico-card-box-shadow);
+            border-left: 4px solid var(--pico-primary);
+        }
+        .stat-card .stat-number {
+            font-size: 2rem;
+            font-weight: 700;
+            line-height: 1.2;
+        }
+        .stat-card .stat-label {
+            color: var(--pico-muted-color);
+            font-size: 0.85rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .capability-badge {
+            display: inline-block;
+            background: var(--pico-primary-focus);
+            color: var(--pico-primary);
+            font-size: 0.7rem;
+            padding: 0.15rem 0.5rem;
+            border-radius: 12px;
+            margin-right: 0.2rem;
+            white-space: nowrap;
+        }
+        .status-badge {
+            font-size: 0.75rem;
+            padding: 0.2rem 0.6rem;
+            border-radius: 20px;
+            font-weight: 500;
+        }
+        .status-active { background: #d1fae5; color: #065f46; }
+        .status-down { background: #fee2e2; color: #991b1b; }
+        .status-disabled { background: #e5e7eb; color: #4b5563; }
+        .status-unknown { background: #fef3c7; color: #92400e; }
+        .token-display {
+            background: #f3f4f6;
+            padding: 0.3rem 0.8rem;
+            border-radius: 4px;
+            font-family: monospace;
+            font-size: 0.9rem;
+        }
+        .modal-overlay {
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.4);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 999;
+        }
+        .modal-overlay.open {
+            display: flex;
+        }
+        .modal-card {
+            background: var(--pico-card-background-color);
+            max-width: 600px;
+            width: 90%;
+            padding: 2rem;
+            border-radius: var(--pico-border-radius);
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            position: relative;
+        }
+        .modal-card .close-btn {
+            position: absolute;
+            top: 1rem;
+            right: 1.5rem;
+            font-size: 1.5rem;
+            cursor: pointer;
+            color: var(--pico-muted-color);
+        }
+        .table-toolbar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+            margin-bottom: 1rem;
+        }
+        .inline-flex { display: inline-flex; align-items: center; gap: 0.4rem; }
+        .mt-2 { margin-top: 1rem; }
+        .mb-1 { margin-bottom: 0.5rem; }
+        .gap-1 { gap: 0.5rem; }
+        /* 模拟探测进度 */
+        .probe-progress {
+            background: var(--pico-card-background-color);
+            border-radius: var(--pico-border-radius);
+            padding: 0.8rem 1.2rem;
+            margin: 0.8rem 0;
+            border: 1px solid var(--pico-muted-border-color);
+        }
+        .probe-progress .step {
+            display: flex;
+            align-items: center;
+            gap: 0.6rem;
+            padding: 0.2rem 0;
+        }
+        .probe-progress .step .icon {
+            width: 20px;
+            text-align: center;
+        }
+        .probe-progress .step.done { color: var(--pico-color); }
+        .probe-progress .step.pending { color: var(--pico-muted-color); }
+        .probe-progress .step .spinner {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            border: 2px solid var(--pico-primary-focus);
+            border-top-color: var(--pico-primary);
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .sidebar .menu-icon { font-size: 1.1rem; width: 1.6rem; text-align: center; }
+        /* 响应式调整 */
+        @media (max-width: 768px) {
+            .app-wrapper { flex-direction: column; }
+            .sidebar {
+                width: 100%;
+                height: auto;
+                position: relative;
+                border-right: none;
+                border-bottom: 1px solid var(--pico-muted-border-color);
+                padding: 0.8rem 1rem;
+            }
+            .sidebar .brand { margin-bottom: 0.5rem; }
+            .sidebar nav ul { display: flex; flex-wrap: wrap; gap: 0.2rem; }
+            .sidebar nav li { margin-bottom: 0; }
+            .sidebar nav a { padding: 0.4rem 0.6rem; font-size: 0.8rem; }
+            .main-content { padding: 1rem; height: auto; }
+            .stats-grid { grid-template-columns: 1fr 1fr; }
+        }
+    </style>
+</head>
+<body>
+<div class="app-wrapper">
+    <!-- 侧边栏 -->
+    <aside class="sidebar">
+        <div class="brand">🧠 Gateway</div>
+        <nav>
+            <ul>
+                <li><a href="#" data-page="dashboard" class="active"><span class="menu-icon">📊</span> 仪表盘</a></li>
+                <li><a href="#" data-page="channels"><span class="menu-icon">🔌</span> 渠道管理</a></li>
+                <li><a href="#" data-page="models"><span class="menu-icon">🤖</span> 模型管理</a></li>
+                <li><a href="#" data-page="tokens"><span class="menu-icon">🔑</span> 令牌管理</a></li>
+                <li><a href="#" data-page="logs"><span class="menu-icon">📋</span> 请求日志</a></li>
+                <li><hr></li>
+                <li><a href="#"><span class="menu-icon">🚪</span> 退出</a></li>
+            </ul>
+        </nav>
+        <div style="margin-top: 2rem; font-size: 0.8rem; color: var(--pico-muted-color);">
+            管理员 · admin
+        </div>
+    </aside>
+
+    <!-- 主内容 -->
+    <main class="main-content">
+        <!-- ======================== 仪表盘 ======================== -->
+        <section id="page-dashboard" class="page-section active">
+            <hgroup>
+                <h1>仪表盘</h1>
+                <p>网关运行状态总览</p>
+            </hgroup>
+            <div class="stats-grid">
+                <div class="stat-card"><div class="stat-number">4</div><div class="stat-label">渠道</div></div>
+                <div class="stat-card"><div class="stat-number">12</div><div class="stat-label">模型</div></div>
+                <div class="stat-card"><div class="stat-number">6</div><div class="stat-label">令牌</div></div>
+                <div class="stat-card"><div class="stat-number">2,341</div><div class="stat-label">今日请求</div></div>
+            </div>
+            <div style="display: grid; grid-template-columns: 2fr 1fr; gap: 1.5rem;">
+                <article>
+                    <header>📈 最近请求</header>
+                    <table>
+                        <thead><tr><th>时间</th><th>模型</th><th>状态</th><th>延迟</th></tr></thead>
+                        <tbody>
+                            <tr><td>14:23:01</td><td>deepseek-chat</td><td><span class="status-badge status-active">200</span></td><td>312ms</td></tr>
+                            <tr><td>14:20:45</td><td>claude-3.5</td><td><span class="status-badge status-down">503</span></td><td>—</td></tr>
+                            <tr><td>14:18:12</td><td>gpt-4o</td><td><span class="status-badge status-active">200</span></td><td>1.2s</td></tr>
+                            <tr><td>14:15:33</td><td>deepseek-chat</td><td><span class="status-badge status-active">200</span></td><td>280ms</td></tr>
+                        </tbody>
+                    </table>
+                    <footer><a href="#" data-page="logs">查看全部 →</a></footer>
+                </article>
+                <article>
+                    <header>🔔 健康状态</header>
+                    <ul>
+                        <li>✅ DeepSeek 主号 <span class="status-badge status-active" style="float:right;">active</span></li>
+                        <li>⚠️ Claude API <span class="status-badge status-down" style="float:right;">down</span></li>
+                        <li>✅ 千帆 主库 <span class="status-badge status-active" style="float:right;">active</span></li>
+                        <li>⏸️ 混元 备用 <span class="status-badge status-disabled" style="float:right;">disabled</span></li>
+                    </ul>
+                    <footer>最后检查: 刚刚</footer>
+                </article>
+            </div>
+        </section>
+
+        <!-- ======================== 渠道管理 ======================== -->
+        <section id="page-channels" class="page-section">
+            <hgroup>
+                <h1>渠道管理</h1>
+                <p>添加、编辑、探测上游渠道</p>
+            </hgroup>
+            <div class="table-toolbar">
+                <button id="showAddChannel">➕ 添加渠道</button>
+                <span style="font-size:0.9rem; color:var(--pico-muted-color);">自动探测异步执行，页面实时反馈</span>
+            </div>
+            <table>
+                <thead>
+                    <tr><th>名称</th><th>类型</th><th>Base URL</th><th>状态</th><th>模型数</th><th>操作</th></tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><strong>DeepSeek 主号</strong></td>
+                        <td><span class="capability-badge">openai</span></td>
+                        <td>api.deepseek.com</td>
+                        <td><span class="status-badge status-active">active</span></td>
+                        <td>3</td>
+                        <td>
+                            <a href="#" class="secondary">编辑</a> |
+                            <a href="#" class="secondary">重探测</a> |
+                            <a href="#" class="contrast">禁用</a>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td><strong>Claude 官方</strong></td>
+                        <td><span class="capability-badge">anthropic</span></td>
+                        <td>api.anthropic.com</td>
+                        <td><span class="status-badge status-down">down</span></td>
+                        <td>2</td>
+                        <td>
+                            <a href="#" class="secondary">编辑</a> |
+                            <a href="#" class="secondary">重探测</a> |
+                            <a href="#" class="contrast">启用</a>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td><strong>千帆 主库</strong></td>
+                        <td><span class="capability-badge">qianfan</span></td>
+                        <td>qianfan.baidu.com</td>
+                        <td><span class="status-badge status-active">active</span></td>
+                        <td>6</td>
+                        <td>
+                            <a href="#" class="secondary">编辑</a> |
+                            <a href="#" class="secondary">重探测</a> |
+                            <a href="#" class="contrast">禁用</a>
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <!-- 添加渠道表单（模拟） -->
+            <article id="addChannelForm" style="display:none; margin-top:1.5rem; border:1px solid var(--pico-primary-focus);">
+                <header>➕ 添加渠道 <span style="float:right; cursor:pointer;" onclick="document.getElementById('addChannelForm').style.display='none'">✕</span></header>
+                <form>
+                    <div class="grid">
+                        <div><label>名称 <input type="text" value="新渠道" /></label></div>
+                        <div><label>Base URL <input type="text" value="https://api.example.com" /></label></div>
+                    </div>
+                    <div class="grid">
+                        <div><label>API Keys <textarea rows="1">sk-xxx, sk-yyy</textarea></label></div>
+                        <div><label>类型 <select><option value="auto" selected>自动探测</option><option>openai</option><option>anthropic</option><option>responses</option><option>qianfan</option><option>hunyuan</option></select></label></div>
+                    </div>
+                    <div class="probe-progress">
+                        <div class="step done"><span class="icon">✅</span> 协议识别: OpenAI 兼容</div>
+                        <div class="step done"><span class="icon">✅</span> 模型列表同步: 12 个模型</div>
+                        <div class="step pending"><span class="icon"><span class="spinner"></span></span> 能力探测 (进行中…)</div>
+                        <div class="step pending"><span class="icon">⏳</span> 健康检查通过</div>
+                    </div>
+                    <button type="submit" class="primary">保存并探测</button>
+                    <button type="button" class="secondary" onclick="document.getElementById('addChannelForm').style.display='none'">取消</button>
+                </form>
+            </article>
+            <script>
+                document.getElementById('showAddChannel').addEventListener('click', function(e){
+                    e.preventDefault();
+                    const form = document.getElementById('addChannelForm');
+                    form.style.display = (form.style.display === 'none') ? 'block' : 'none';
+                });
+            </script>
+        </section>
+
+        <!-- ======================== 模型管理 ======================== -->
+        <section id="page-models" class="page-section">
+            <hgroup>
+                <h1>模型管理</h1>
+                <p>查看、启用、别名、能力覆盖</p>
+            </hgroup>
+            <div class="table-toolbar">
+                <span>共 12 个模型</span>
+                <span><button class="outline">🔄 同步所有模型</button></span>
+            </div>
+            <table>
+                <thead>
+                    <tr><th>模型名称</th><th>渠道</th><th>能力标签</th><th>状态</th><th>别名</th><th>操作</th></tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><code>deepseek-chat</code></td>
+                        <td>DeepSeek 主号</td>
+                        <td>
+                            <span class="capability-badge">system</span>
+                            <span class="capability-badge">tools</span>
+                            <span class="capability-badge">json</span>
+                        </td>
+                        <td><span class="status-badge status-active">启用</span></td>
+                        <td><code>ds-main</code></td>
+                        <td><a href="#" class="secondary">编辑</a> | <a href="#" class="contrast">禁用</a></td>
+                    </tr>
+                    <tr>
+                        <td><code>claude-3-5-sonnet</code></td>
+                        <td>Claude 官方</td>
+                        <td>
+                            <span class="capability-badge">system</span>
+                            <span class="capability-badge">tools</span>
+                            <span class="capability-badge">vision</span>
+                        </td>
+                        <td><span class="status-badge status-down">禁用</span></td>
+                        <td>—</td>
+                        <td><a href="#" class="secondary">编辑</a> | <a href="#" class="contrast">启用</a></td>
+                    </tr>
+                    <tr>
+                        <td><code>ERNIE-4.0</code></td>
+                        <td>千帆 主库</td>
+                        <td>
+                            <span class="capability-badge">system</span>
+                            <span class="capability-badge">tools</span>
+                        </td>
+                        <td><span class="status-badge status-active">启用</span></td>
+                        <td><code>qianfan-4</code></td>
+                        <td><a href="#" class="secondary">编辑</a> | <a href="#" class="contrast">禁用</a></td>
+                    </tr>
+                    <tr>
+                        <td><code>gpt-4o</code></td>
+                        <td>DeepSeek 主号 (别名)</td>
+                        <td>
+                            <span class="capability-badge">system</span>
+                            <span class="capability-badge">tools</span>
+                            <span class="capability-badge">vision</span>
+                            <span class="capability-badge">json</span>
+                        </td>
+                        <td><span class="status-badge status-active">启用</span></td>
+                        <td><code>gpt-4o</code></td>
+                        <td><a href="#" class="secondary">编辑</a> | <a href="#" class="contrast">禁用</a></td>
+                    </tr>
+                </tbody>
+            </table>
+            <!-- 能力编辑示例 -->
+            <details>
+                <summary>⚙️ 手动覆盖能力（示例）</summary>
+                <form class="grid" style="grid-template-columns: 1fr 1fr;">
+                    <label><input type="checkbox" checked> system</label>
+                    <label><input type="checkbox" checked> tools</label>
+                    <label><input type="checkbox"> vision</label>
+                    <label><input type="checkbox" checked> json_mode</label>
+                    <div style="grid-column:1/-1;"><button class="secondary">保存覆盖</button> <span style="color:var(--pico-muted-color);">覆盖后自动探测结果将被替换</span></div>
+                </form>
+            </details>
+        </section>
+
+        <!-- ======================== 令牌管理 ======================== -->
+        <section id="page-tokens" class="page-section">
+            <hgroup>
+                <h1>令牌管理</h1>
+                <p>生成、吊销、白名单控制（无计费）</p>
+            </hgroup>
+            <div class="table-toolbar">
+                <button id="showGenToken">🔑 生成新令牌</button>
+                <span style="font-size:0.9rem; color:var(--pico-muted-color);">新建令牌必须指定至少一个模型</span>
+            </div>
+            <table>
+                <thead>
+                    <tr><th>名称</th><th>令牌哈希 (前8位)</th><th>模型白名单</th><th>状态</th><th>最后使用</th><th>操作</th></tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>开发测试</td>
+                        <td><code>a7f3e9c1</code></td>
+                        <td><code>deepseek-chat, gpt-4o</code></td>
+                        <td><span class="status-badge status-active">启用</span></td>
+                        <td>2026-08-10 14:23</td>
+                        <td><a href="#" class="contrast">吊销</a> | <a href="#" class="secondary">编辑</a></td>
+                    </tr>
+                    <tr>
+                        <td>Claude 专用</td>
+                        <td><code>5b2d8f4a</code></td>
+                        <td><code>claude-3-5-sonnet</code></td>
+                        <td><span class="status-badge status-active">启用</span></td>
+                        <td>2026-08-09 09:12</td>
+                        <td><a href="#" class="contrast">吊销</a> | <a href="#" class="secondary">编辑</a></td>
+                    </tr>
+                    <tr>
+                        <td>全部模型 (允许全部)</td>
+                        <td><code>9c1e7b3d</code></td>
+                        <td><span class="capability-badge">ALL</span> (显式勾选)</td>
+                        <td><span class="status-badge status-active">启用</span></td>
+                        <td>2026-08-08 16:45</td>
+                        <td><a href="#" class="contrast">吊销</a> | <a href="#" class="secondary">编辑</a></td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <!-- 生成令牌模态框 -->
+            <div id="genTokenModal" class="modal-overlay">
+                <div class="modal-card">
+                    <span class="close-btn" onclick="closeModal('genTokenModal')">✕</span>
+                    <h3>生成新令牌</h3>
+                    <form>
+                        <label>令牌名称 <input type="text" value="新令牌" /></label>
+                        <label>模型白名单 (至少选择一个) <br>
+                            <select multiple style="min-height:80px;">
+                                <option value="deepseek-chat">deepseek-chat</option>
+                                <option value="gpt-4o">gpt-4o</option>
+                                <option value="claude-3-5-sonnet">claude-3-5-sonnet</option>
+                                <option value="ERNIE-4.0">ERNIE-4.0</option>
+                                <option value="deepseek-coder">deepseek-coder</option>
+                            </select>
+                        </label>
+                        <label><input type="checkbox" /> 允许全部模型 (覆盖上面选择)</label>
+                        <button type="submit" class="primary">生成</button>
+                        <button type="button" class="secondary" onclick="closeModal('genTokenModal')">取消</button>
+                    </form>
+                    <div style="margin-top:1rem; padding:0.8rem; background: #ecfdf5; border-radius:8px; border:1px solid #10b981; display:none;" id="tokenResult">
+                        <strong>✅ 令牌已生成 (仅显示一次)</strong><br>
+                        <span class="token-display">sk-7f3a8e9b2c1d4f5a6e7b8c9d0e1f2a3b</span>
+                        <p style="font-size:0.8rem; color:#065f46;">请立即复制保存，页面刷新后将不再显示。</p>
+                    </div>
+                </div>
+            </div>
+            <script>
+                document.getElementById('showGenToken').addEventListener('click', function(e){
+                    e.preventDefault();
+                    document.getElementById('genTokenModal').classList.add('open');
+                });
+                function closeModal(id) {
+                    document.getElementById(id).classList.remove('open');
+                }
+                // 模拟生成后显示结果（只是演示）
+                document.querySelector('#genTokenModal form').addEventListener('submit', function(e){
+                    e.preventDefault();
+                    document.getElementById('tokenResult').style.display = 'block';
+                });
+            </script>
+        </section>
+
+        <!-- ======================== 请求日志 ======================== -->
+        <section id="page-logs" class="page-section">
+            <hgroup>
+                <h1>请求日志</h1>
+                <p>按时间、模型、令牌、状态筛选</p>
+            </hgroup>
+            <form class="grid" style="grid-template-columns: 2fr 1fr 1fr 1fr auto; align-items: end;">
+                <label>时间范围 <input type="text" placeholder="2026-08-10 ~ 2026-08-10" value="今日" /></label>
+                <label>模型 <select><option>全部</option><option>deepseek-chat</option><option>gpt-4o</option></select></label>
+                <label>令牌 <select><option>全部</option><option>开发测试</option></select></label>
+                <label>状态 <select><option>全部</option><option>成功</option><option>失败</option></select></label>
+                <button class="primary" style="margin-bottom:0.5rem;">筛选</button>
+            </form>
+            <table>
+                <thead>
+                    <tr><th>时间</th><th>请求ID</th><th>令牌</th><th>模型</th><th>渠道</th><th>状态</th><th>延迟</th><th>Tokens</th></tr>
+                </thead>
+                <tbody>
+                    <tr><td>14:23:01</td><td><code>req_abc123</code></td><td>开发测试</td><td>deepseek-chat</td><td>DeepSeek 主号</td><td><span class="status-badge status-active">200</span></td><td>312ms</td><td>128/45</td></tr>
+                    <tr><td>14:20:45</td><td><code>req_def456</code></td><td>Claude专用</td><td>claude-3-5-sonnet</td><td>Claude 官方</td><td><span class="status-badge status-down">503</span></td><td>—</td><td>—</td></tr>
+                    <tr><td>14:18:12</td><td><code>req_ghi789</code></td><td>全部模型</td><td>gpt-4o</td><td>DeepSeek 主号</td><td><span class="status-badge status-active">200</span></td><td>1.2s</td><td>256/89</td></tr>
+                    <tr><td>14:15:33</td><td><code>req_jkl012</code></td><td>开发测试</td><td>ERNIE-4.0</td><td>千帆 主库</td><td><span class="status-badge status-active">200</span></td><td>780ms</td><td>64/22</td></tr>
+                    <tr><td>14:10:07</td><td><code>req_mno345</code></td><td>全部模型</td><td>deepseek-chat</td><td>DeepSeek 主号</td><td><span class="status-badge status-active">200</span></td><td>290ms</td><td>92/31</td></tr>
+                </tbody>
+            </table>
+            <footer style="margin-top:1rem; display:flex; justify-content:space-between;">
+                <span>显示 1-5 / 共 2,341 条</span>
+                <span><button class="outline">上一页</button> <button class="outline">下一页</button></span>
+            </footer>
+        </section>
+
+    </main>
+</div>
+
+<!-- 页面导航切换脚本 -->
+<script>
+    document.querySelectorAll('.sidebar nav a[data-page]').forEach(link => {
+        link.addEventListener('click', function(e) {
+            e.preventDefault();
+            const page = this.dataset.page;
+            // 更新菜单激活状态
+            document.querySelectorAll('.sidebar nav a').forEach(a => a.classList.remove('active'));
+            this.classList.add('active');
+            // 显示对应页面
+            document.querySelectorAll('.page-section').forEach(s => s.classList.remove('active'));
+            const target = document.getElementById('page-' + page);
+            if (target) target.classList.add('active');
+            // 如果点击的是日志，也处理仪表盘的“查看全部”链接
+        });
+    });
+    // 处理仪表盘里的“查看全部”链接
+    document.querySelector('#page-dashboard a[data-page="logs"]')?.addEventListener('click', function(e){
+        e.preventDefault();
+        document.querySelector('.sidebar nav a[data-page="logs"]')?.click();
+    });
+</script>
+
+</body>
+</html>

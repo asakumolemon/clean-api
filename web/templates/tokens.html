@@ -1,0 +1,62 @@
+{{template "head" .}}
+<div class="layout">
+  {{template "sidebar" .}}
+  <main class="main">
+    <h1>令牌管理</h1>
+    {{template "flash" .}}
+
+    {{if .NewToken}}
+    <article style="border-color: var(--pico-primary);">
+      <strong>令牌已生成，仅显示一次，请立即保存：</strong>
+      <div class="plaintext-token mono">{{.NewToken}}</div>
+      <small>数据库只保存其 sha256 哈希，关闭本页后无法再次查看。</small>
+    </article>
+    {{end}}
+
+    <article>
+      <h3>新建令牌</h3>
+      <form method="post" action="/admin/tokens">
+        <label>名称
+          <input name="name" type="text" placeholder="例如：我的 NextChat">
+        </label>
+        <label>模型白名单（逗号分隔，至少一个；留空需勾选下方开关）
+          <input name="models" type="text" placeholder="deepseek-chat, gpt-4o">
+        </label>
+        <label>
+          <input name="allow_all" type="checkbox" role="switch">
+          允许全部模型（必须显式勾选才生效）
+        </label>
+        <button type="submit">生成</button>
+      </form>
+    </article>
+
+    <table>
+      <thead>
+        <tr><th>ID</th><th>名称</th><th>白名单</th><th>状态</th><th>最近使用</th><th>操作</th></tr>
+      </thead>
+      <tbody>
+        {{range .Tokens}}
+        <tr>
+          <td>{{.ID}}</td>
+          <td>{{.Name}}</td>
+          <td class="mono">{{if .AllowAll}}允许全部{{else}}{{range .ModelWhitelist}}{{.}} {{end}}{{end}}</td>
+          <td>{{if .Enabled}}启用{{else}}禁用{{end}}</td>
+          <td>{{if .LastUsedAt.Valid}}{{.LastUsedAt.Time.Format "2006-01-02 15:04"}}{{else}}-{{end}}</td>
+          <td>
+            <form method="post" action="/admin/tokens/{{.ID}}/toggle" style="display:inline">
+              <button type="submit" class="secondary outline">{{if .Enabled}}禁用{{else}}启用{{end}}</button>
+            </form>
+            <form method="post" action="/admin/tokens/{{.ID}}/revoke" style="display:inline">
+              <button type="submit" class="secondary outline">吊销</button>
+            </form>
+          </td>
+        </tr>
+        {{else}}
+        <tr><td colspan="6">暂无令牌</td></tr>
+        {{end}}
+      </tbody>
+    </table>
+  </main>
+</div>
+</body>
+</html>

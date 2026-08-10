@@ -1,0 +1,41 @@
+{{define "head"}}
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{{.Title}}</title>
+<link rel="stylesheet" href="/admin/static/pico.min.css">
+<style>
+  body { background: var(--pico-background-color); }
+  .layout { display: flex; min-height: 100vh; }
+  .sidebar {
+    width: 220px; flex-shrink: 0; padding: 1.5rem 1rem;
+    border-right: 1px solid var(--pico-muted-border-color);
+  }
+  .sidebar h1 { font-size: 1.1rem; margin-bottom: 1.5rem; }
+  .sidebar nav a { display: block; padding: 0.5rem 0.75rem; border-radius: var(--pico-border-radius); }
+  .sidebar nav a.active { background: var(--pico-primary-background); color: var(--pico-primary-inverse); }
+  .main { flex: 1; padding: 1.5rem 2rem; }
+  .flash { margin-bottom: 1rem; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; word-break: break-all; }
+  .plaintext-token { background: var(--pico-card-background-color); border: 1px solid var(--pico-muted-border-color); padding: .75rem; margin: .5rem 0; }
+</style>
+</head>
+<body>
+{{end}}
+
+{{define "sidebar"}}
+<aside class="sidebar">
+  <h1>智能 API 网关</h1>
+  <nav>
+    <a href="/admin/" {{if eq .Active "dashboard"}}class="active"{{end}}>仪表盘</a>
+    <a href="/admin/tokens" {{if eq .Active "tokens"}}class="active"{{end}}>令牌管理</a>
+    <a href="/admin/logout">退出</a>
+  </nav>
+</aside>
+{{end}}
+
+{{define "flash"}}
+{{if .Flash}}<div class="flash" role="alert">{{.Flash}}</div>{{end}}
+{{end}}

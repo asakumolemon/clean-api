@@ -1,0 +1,10 @@
+{
+  "addr": ":8080",
+  "db_path": "data/gateway.db",
+  "log_level": "info",
+  "log_retention_days": 7,
+  "default_timeout_seconds": 120,
+  "admin_username": "admin",
+  "admin_password": "",
+  "session_secret": ""
+}
