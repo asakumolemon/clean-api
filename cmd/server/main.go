@@ -83,6 +83,8 @@ func main() {
 		r.Use(sessions.APIAuth(st))
 		r.Get("/models", apiServer.Models)
 		r.Post("/chat/completions", apiServer.ChatCompletions)
+		r.Post("/responses", apiServer.Responses)
+		r.Post("/messages", apiServer.Messages)
 	})
 
 	srv := &http.Server{

@@ -2,11 +2,34 @@
 package protocol
 
 import (
+	"bufio"
 	"bytes"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 )
+
+// RandHex 随机十六进制串（合成响应 ID 用，客户端不校验格式）。
+func RandHex(n int) string {
+	b := make([]byte, n)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
+// flushWriter 刷新缓冲并把底层 io.Writer 的 Flush 能力透传（SSE 即时送达）。
+func flushWriter(bw *bufio.Writer, w io.Writer) error {
+	if err := bw.Flush(); err != nil {
+		return err
+	}
+	if fl, ok := w.(http.Flusher); ok {
+		fl.Flush()
+	}
+	return nil
+}
 
 // --- OpenAI 请求体解析（入口 → IR） ---
 
@@ -312,6 +335,9 @@ type usageOut struct {
 
 // SerializeOpenAIChatResponse 把 IR 响应序列化为 OpenAI Chat 格式。
 func SerializeOpenAIChatResponse(resp *ChatResponse) ([]byte, error) {
+	if resp.ID == "" {
+		resp.ID = "chatcmpl-" + RandHex(8)
+	}
 	out := openaiResponseOut{
 		ID:      resp.ID,
 		Object:  "chat.completion",
@@ -332,4 +358,188 @@ func SerializeOpenAIChatResponse(resp *ChatResponse) ([]byte, error) {
 		})
 	}
 	return json.Marshal(out)
+}
+
+// --- OpenAI 流式（上游解析 + 出口编码） ---
+
+// openaiStreamChunk OpenAI 流式 chunk（choices[0].delta 增量）。
+type openaiStreamChunk struct {
+	Choices []struct {
+		Index        int `json:"index"`
+		Delta        struct {
+			Content   string `json:"content"`
+			ToolCalls []struct {
+				Index    int    `json:"index"`
+				ID       string `json:"id"`
+				Function struct {
+					Name      string `json:"name"`
+					Arguments string `json:"arguments"`
+				} `json:"function"`
+			} `json:"tool_calls"`
+		} `json:"delta"`
+		FinishReason string `json:"finish_reason"`
+	} `json:"choices"`
+	Usage *Usage `json:"usage"`
+}
+
+// OpenAIStreamParser 上游 OpenAI 流式响应解析器（状态在实例内）：
+// 逐行喂入 `data:` 内容；tool_calls 增量按 index 累积（新 index → start 事件）；
+// finish_reason 与 usage 缓存到 [DONE] 时随 done 事件一起发出。
+type OpenAIStreamParser struct {
+	toolStarted  map[int]bool
+	finishReason string
+	usage        *Usage
+}
+
+func NewOpenAIStreamParser() *OpenAIStreamParser {
+	return &OpenAIStreamParser{toolStarted: map[int]bool{}}
+}
+
+// Feed 喂入一行 data 内容（不含 "data: " 前缀）。返回 0..n 个事件。
+func (p *OpenAIStreamParser) Feed(data string) ([]StreamEvent, error) {
+	if data == "[DONE]" {
+		ev := StreamEvent{Type: EventDone, FinishReason: p.finishReason, Usage: p.usage}
+		return []StreamEvent{ev}, nil
+	}
+	var chunk openaiStreamChunk
+	if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+		return nil, fmt.Errorf("解析流式块失败: %w", err)
+	}
+	if chunk.Usage != nil {
+		p.usage = chunk.Usage
+	}
+	var evs []StreamEvent
+	for _, c := range chunk.Choices {
+		if c.FinishReason != "" {
+			p.finishReason = c.FinishReason
+		}
+		if c.Delta.Content != "" {
+			evs = append(evs, StreamEvent{Type: EventTextDelta, Delta: c.Delta.Content})
+		}
+		for _, tc := range c.Delta.ToolCalls {
+			if !p.toolStarted[tc.Index] {
+				p.toolStarted[tc.Index] = true
+				evs = append(evs, StreamEvent{Type: EventToolCallStart,
+					ToolCall: ToolCallDelta{Index: tc.Index, ID: tc.ID, Name: tc.Function.Name}})
+			}
+			if tc.Function.Arguments != "" {
+				evs = append(evs, StreamEvent{Type: EventToolCallDelta,
+					ToolCall: ToolCallDelta{Index: tc.Index, Arguments: tc.Function.Arguments}})
+			}
+		}
+	}
+	return evs, nil
+}
+
+// OpenAIChatStreamWriter OpenAI Chat 流式出口编码器：StreamEvent → SSE chunk。
+// done 事件写最后 chunk（finish_reason + usage）并追加 [DONE]。
+type OpenAIChatStreamWriter struct {
+	w       *bufio.Writer
+	under   io.Writer
+	id      string
+	model   string
+	created int64
+	done    bool
+}
+
+func NewOpenAIChatStreamWriter(w io.Writer, id, model string, created int64) *OpenAIChatStreamWriter {
+	return &OpenAIChatStreamWriter{w: bufio.NewWriter(w), under: w, id: id, model: model, created: created}
+}
+
+// WriteEvent 写一个事件。done 事件后流结束，后续事件忽略。
+func (sw *OpenAIChatStreamWriter) WriteEvent(ev StreamEvent) error {
+	if sw.done {
+		return nil
+	}
+	var err error
+	switch ev.Type {
+	case EventTextDelta:
+		err = sw.writeChunk(map[string]any{
+			"choices": []any{map[string]any{
+				"index": 0, "delta": map[string]any{"content": ev.Delta}, "finish_reason": nil,
+			}},
+		})
+	case EventToolCallStart:
+		err = sw.writeChunk(map[string]any{
+			"choices": []any{map[string]any{
+				"index": 0,
+				"delta": map[string]any{"tool_calls": []any{map[string]any{
+					"index": ev.ToolCall.Index, "id": ev.ToolCall.ID, "type": "function",
+					"function": map[string]any{"name": ev.ToolCall.Name, "arguments": ""},
+				}}},
+				"finish_reason": nil,
+			}},
+		})
+	case EventToolCallDelta:
+		err = sw.writeChunk(map[string]any{
+			"choices": []any{map[string]any{
+				"index": 0,
+				"delta": map[string]any{"tool_calls": []any{map[string]any{
+					"index": ev.ToolCall.Index, "type": "function",
+					"function": map[string]any{"arguments": ev.ToolCall.Arguments},
+				}}},
+				"finish_reason": nil,
+			}},
+		})
+	case EventToolCallStop:
+		return nil // OpenAI 无工具调用 stop 事件
+	case EventDone:
+		chunk := map[string]any{
+			"choices": []any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": anyNil(ev.FinishReason)}},
+		}
+		if ev.Usage != nil {
+			chunk["usage"] = ev.Usage
+		}
+		if err := sw.writeChunk(chunk); err != nil {
+			return err
+		}
+		_, err = sw.w.WriteString("data: [DONE]\n\n")
+		sw.done = true
+	}
+	if err != nil {
+		return err
+	}
+	return flushWriter(sw.w, sw.under)
+}
+
+// WriteError 流中错误：写 OpenAI 风格 error chunk 并收尾。
+func (sw *OpenAIChatStreamWriter) WriteError(err error) error {
+	if sw.done {
+		return nil
+	}
+	_ = sw.writeChunk(map[string]any{"error": map[string]any{"message": err.Error(), "type": "upstream_error"}})
+	_, _ = sw.w.WriteString("data: [DONE]\n\n")
+	sw.done = true
+	return flushWriter(sw.w, sw.under)
+}
+
+// Finish 流收尾：若上游未发 done（未收到 [DONE]），补写 [DONE] 防客户端挂起。
+func (sw *OpenAIChatStreamWriter) Finish() error {
+	if sw.done {
+		return nil
+	}
+	_, _ = sw.w.WriteString("data: [DONE]\n\n")
+	sw.done = true
+	return flushWriter(sw.w, sw.under)
+}
+
+func (sw *OpenAIChatStreamWriter) writeChunk(payload map[string]any) error {
+	payload["id"] = sw.id
+	payload["object"] = "chat.completion.chunk"
+	payload["created"] = sw.created
+	payload["model"] = sw.model
+	b, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	_, err = sw.w.WriteString("data: " + string(b) + "\n\n")
+	return err
+}
+
+// anyNil 空串转 nil（JSON null），否则原值。
+func anyNil(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
 }

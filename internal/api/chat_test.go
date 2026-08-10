@@ -71,7 +71,10 @@ func addTestChannel(t *testing.T, s *store.Store, baseURL string) {
 	if _, err := s.AddChannelKey(ctx, chID, "sk-test"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.SyncModels(ctx, chID, map[string]store.Capabilities{"deepseek-chat": {}}, time.Now().UTC()); err != nil {
+	// 模拟真实探测结果：全能力支持（system 折叠行为由 router 单测覆盖）
+	if _, err := s.SyncModels(ctx, chID, map[string]store.Capabilities{
+		"deepseek-chat": {System: true, Tools: true, Vision: true, JSONMode: true},
+	}, time.Now().UTC()); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -213,11 +216,20 @@ func TestChatCompletionsRoundTrip(t *testing.T) {
 	}
 }
 
-// stream=true → 501（流式 M4 实现），不发上游请求。
-func TestChatStreamNotSupported(t *testing.T) {
+// OpenAI 入口流式：SSE 头 + chunks + [DONE]。
+func TestChatStreamFlow(t *testing.T) {
 	srv, st, am := newTestSrv(t)
 	ctx := context.Background()
-	upstream, _ := chatUpstream(t, "x")
+	sse := `data: {"choices":[{"index":0,"delta":{"content":"你"},"finish_reason":null}]}
+data: {"choices":[{"index":0,"delta":{"content":"好"},"finish_reason":null}]}
+data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":1,"total_tokens":3}}
+data: [DONE]
+`
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, sse)
+	}))
+	t.Cleanup(upstream.Close)
 
 	uid, _ := st.CreateUser(ctx, "admin", "hash", "admin")
 	plain := "test-token-abc"
@@ -225,8 +237,35 @@ func TestChatStreamNotSupported(t *testing.T) {
 	addTestChannel(t, st, upstream.URL)
 
 	rec := doChat(t, srv, am, st, plain, `{"model":"deepseek-chat","stream":true,"messages":[{"role":"user","content":"hi"}]}`)
-	if rec.Code != http.StatusNotImplemented {
-		t.Error("stream 应 501，got", rec.Code)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("应 200，got %d: %s", rec.Code, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/event-stream") {
+		t.Error("Content-Type 应为 text/event-stream，got", ct)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `"delta":{"content":"你"}`) || !strings.Contains(body, `"delta":{"content":"好"}`) {
+		t.Error("应包含文本增量 chunk:", body)
+	}
+	if !strings.Contains(body, `"finish_reason":"stop"`) || !strings.Contains(body, `"total_tokens":3`) {
+		t.Error("最后 chunk 应带 finish_reason 与 usage:", body)
+	}
+	if !strings.HasSuffix(body, "data: [DONE]\n\n") {
+		t.Error("应以 [DONE] 结尾:", body)
+	}
+}
+
+// 流式首事件前路由失败（模型不存在）→ 正常 HTTP 错误（非 SSE）。
+func TestChatStreamModelNotFound(t *testing.T) {
+	srv, st, am := newTestSrv(t)
+	ctx := context.Background()
+	uid, _ := st.CreateUser(ctx, "admin", "hash", "admin")
+	plain := "test-token-abc"
+	_, _ = st.CreateToken(ctx, uid, "t", auth.HashToken(plain), []string{"deepseek-chat"}, true)
+
+	rec := doChat(t, srv, am, st, plain, `{"model":"deepseek-chat","stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+	if rec.Code != http.StatusNotFound {
+		t.Error("无渠道流式请求应 404，got", rec.Code)
 	}
 }
 
@@ -268,6 +307,302 @@ func TestChatInvalidBody(t *testing.T) {
 	}
 	if rec := doChat(t, srv, am, st, plain, `{"messages":[]}`); rec.Code != http.StatusBadRequest {
 		t.Error("缺 model 应 400，got", rec.Code)
+	}
+}
+
+// --- 三入口通用工具 ---
+
+// doV1 对任意 /v1 handler 发起带令牌请求。
+func doV1(t *testing.T, handler http.HandlerFunc, am *auth.SessionManager, s *store.Store, token, method, path, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(method, path, strings.NewReader(body))
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	h := am.APIAuth(s)(handler)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return rec
+}
+
+// upstreamCapture 记录请求体并可返回自定义响应的 OpenAI 模拟上游。
+func upstreamCapture(t *testing.T, respond func(gotBody string) (int, string)) (*httptest.Server, *atomic.Value) {
+	t.Helper()
+	var lastBody atomic.Value
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		lastBody.Store(string(b))
+		status, respBody := respond(string(b))
+		w.WriteHeader(status)
+		_, _ = io.WriteString(w, respBody)
+	}))
+	t.Cleanup(srv.Close)
+	return srv, &lastBody
+}
+
+// chatResp 非流式 OpenAI 响应体（可选工具调用）。
+func chatResp(content string, toolCalls string) string {
+	msg := `{"role":"assistant","content":"` + content + `"`
+	if toolCalls != "" {
+		msg += `,"tool_calls":[` + toolCalls + `]`
+	}
+	msg += `}`
+	return `{"id":"chatcmpl-1","created":1700000000,"model":"deepseek-chat","choices":[{"index":0,"message":` + msg + `,"finish_reason":"` + tern(toolCalls != "", "tool_calls", "stop") + `"}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}`
+}
+
+func tern(cond bool, a, b string) string {
+	if cond {
+		return a
+	}
+	return b
+}
+
+func newUserToken(t *testing.T, st *store.Store, model string) string {
+	t.Helper()
+	uid, _ := st.CreateUser(context.Background(), "admin", "hash", "admin")
+	plain := "test-token-abc"
+	_, _ = st.CreateToken(context.Background(), uid, "t", auth.HashToken(plain), []string{model}, true)
+	return plain
+}
+
+// --- Anthropic Messages 入口 ---
+
+// Claude Code 风格调用（非流式 + 工具调用）：上游收到 OpenAI 格式，出口为 Anthropic 格式。
+func TestMessagesNonStreamToolCalls(t *testing.T) {
+	srv, st, am := newTestSrv(t)
+	upstream, lastBody := upstreamCapture(t, func(got string) (int, string) {
+		return 200, chatResp("查好了", `{"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"北京\"}"}}`)
+	})
+	plain := newUserToken(t, st, "deepseek-chat")
+	addTestChannel(t, st, upstream.URL)
+
+	body := `{
+		"model": "deepseek-chat",
+		"max_tokens": 1024,
+		"system": "你是助手",
+		"messages": [{"role": "user", "content": "北京天气？"}],
+		"tools": [{"name": "get_weather", "description": "查天气", "input_schema": {"type": "object"}}]
+	}`
+	rec := doV1(t, srv.Messages, am, st, plain, http.MethodPost, "/v1/messages", body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("应 200，got %d: %s", rec.Code, rec.Body.String())
+	}
+	// 上游请求：system → role=system 消息，tools → function 格式
+	sent := lastBody.Load().(string)
+	for _, want := range []string{`"role":"system"`, `"content":"你是助手"`, `"name":"get_weather"`, `"parameters":{"type":"object"}`} {
+		if !strings.Contains(sent, want) {
+			t.Errorf("上游请求缺少 %s：%s", want, sent)
+		}
+	}
+	// 出口响应：Anthropic 格式（tool_use 块 + stop_reason=tool_use + usage 映射）
+	var out struct {
+		Type       string `json:"type"`
+		StopReason string `json:"stop_reason"`
+		Content    []struct {
+			Type  string `json:"type"`
+			ID    string `json:"id"`
+			Name  string `json:"name"`
+			Input map[string]any `json:"input"`
+		} `json:"content"`
+		Usage struct {
+			InputTokens  int `json:"input_tokens"`
+			OutputTokens int `json:"output_tokens"`
+		} `json:"usage"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Type != "message" || out.StopReason != "tool_use" {
+		t.Error("顶层字段错误:", rec.Body.String())
+	}
+	if len(out.Content) != 2 || out.Content[1].Type != "tool_use" || out.Content[1].ID != "call_1" || out.Content[1].Name != "get_weather" {
+		t.Error("tool_use 块错误:", rec.Body.String())
+	}
+	if out.Content[1].Input["city"] != "北京" {
+		t.Error("tool_use input 错误:", out.Content[1].Input)
+	}
+	if out.Usage.InputTokens != 10 || out.Usage.OutputTokens != 5 {
+		t.Error("usage 应映射为 input/output:", out.Usage)
+	}
+}
+
+// Anthropic 入口流式：上游 OpenAI SSE → 出口 Anthropic SSE（message_start/content_block_delta/message_stop）。
+func TestMessagesStreaming(t *testing.T) {
+	srv, st, am := newTestSrv(t)
+	sse := `data: {"choices":[{"index":0,"delta":{"content":"你好"},"finish_reason":null}]}
+data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":1,"total_tokens":3}}
+data: [DONE]
+`
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, sse)
+	}))
+	t.Cleanup(upstream.Close)
+	plain := newUserToken(t, st, "deepseek-chat")
+	addTestChannel(t, st, upstream.URL)
+
+	body := `{"model":"deepseek-chat","max_tokens":100,"stream":true,"messages":[{"role":"user","content":"hi"}]}`
+	rec := doV1(t, srv.Messages, am, st, plain, http.MethodPost, "/v1/messages", body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("应 200，got %d: %s", rec.Code, rec.Body.String())
+	}
+	got := rec.Body.String()
+	for _, want := range []string{
+		`event: message_start`,
+		`event: content_block_start`,
+		`event: content_block_delta`,
+		`"delta":{"text":"你好","type":"text_delta"}`,
+		`event: message_delta`,
+		`"stop_reason":"end_turn"`,
+		`event: message_stop`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("Anthropic SSE 缺少 %s：\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "[DONE]") {
+		t.Error("Anthropic SSE 不应有 [DONE]")
+	}
+}
+
+// Anthropic 错误格式：{type:"error",error:{...}}，且状态码映射为 not_found_error。
+func TestMessagesErrorFormat(t *testing.T) {
+	srv, st, am := newTestSrv(t)
+	plain := newUserToken(t, st, "deepseek-chat")
+
+	body := `{"model":"deepseek-chat","max_tokens":100,"messages":[{"role":"user","content":"hi"}]}`
+	rec := doV1(t, srv.Messages, am, st, plain, http.MethodPost, "/v1/messages", body)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("应 404，got %d", rec.Code)
+	}
+	var out map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out["type"] != "error" {
+		t.Error("Anthropic 错误应带 type=error:", rec.Body.String())
+	}
+	errObj := out["error"].(map[string]any)
+	if errObj["type"] != "not_found_error" {
+		t.Error("错误类型应为 not_found_error:", errObj["type"])
+	}
+}
+
+// 缺 max_tokens → 400 invalid_request_error。
+func TestMessagesMissingMaxTokens(t *testing.T) {
+	srv, st, am := newTestSrv(t)
+	plain := newUserToken(t, st, "deepseek-chat")
+
+	rec := doV1(t, srv.Messages, am, st, plain, http.MethodPost, "/v1/messages", `{"model":"m","messages":[]}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Error("缺 max_tokens 应 400，got", rec.Code)
+	}
+}
+
+// --- Responses 入口 ---
+
+// Responses 非流式：instructions/function_call_output → 上游 OpenAI 格式；出口为 Responses 格式。
+func TestResponsesNonStream(t *testing.T) {
+	srv, st, am := newTestSrv(t)
+	upstream, lastBody := upstreamCapture(t, func(got string) (int, string) {
+		return 200, chatResp("北京晴", "")
+	})
+	plain := newUserToken(t, st, "deepseek-chat")
+	addTestChannel(t, st, upstream.URL)
+
+	body := `{
+		"model": "deepseek-chat",
+		"instructions": "你是助手",
+		"input": [
+			{"type": "function_call", "call_id": "call_1", "name": "get_weather", "arguments": "{\"city\":\"北京\"}"},
+			{"type": "function_call_output", "call_id": "call_1", "output": "晴"}
+		]
+	}`
+	rec := doV1(t, srv.Responses, am, st, plain, http.MethodPost, "/v1/responses", body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("应 200，got %d: %s", rec.Code, rec.Body.String())
+	}
+	// 上游：instructions → system 消息；function_call_output → role=tool 消息
+	sent := lastBody.Load().(string)
+	for _, want := range []string{`"role":"system"`, `"role":"tool"`, `"tool_call_id":"call_1"`, `"name":"get_weather"`} {
+		if !strings.Contains(sent, want) {
+			t.Errorf("上游请求缺少 %s：%s", want, sent)
+		}
+	}
+	// 出口：Responses 格式
+	var out struct {
+		Object string `json:"object"`
+		Status string `json:"status"`
+		Output []struct {
+			Type    string `json:"type"`
+			Content []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"output"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Object != "response" || out.Status != "completed" {
+		t.Error("顶层字段错误:", rec.Body.String())
+	}
+	if len(out.Output) != 1 || out.Output[0].Content[0].Text != "北京晴" {
+		t.Error("output 条目错误:", rec.Body.String())
+	}
+}
+
+// Responses 入口流式：output_text.delta + response.completed。
+func TestResponsesStreaming(t *testing.T) {
+	srv, st, am := newTestSrv(t)
+	sse := `data: {"choices":[{"index":0,"delta":{"content":"你好"},"finish_reason":null}]}
+data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":1,"total_tokens":3}}
+data: [DONE]
+`
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, sse)
+	}))
+	t.Cleanup(upstream.Close)
+	plain := newUserToken(t, st, "deepseek-chat")
+	addTestChannel(t, st, upstream.URL)
+
+	body := `{"model":"deepseek-chat","stream":true,"input":"hi"}`
+	rec := doV1(t, srv.Responses, am, st, plain, http.MethodPost, "/v1/responses", body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("应 200，got %d: %s", rec.Code, rec.Body.String())
+	}
+	got := rec.Body.String()
+	for _, want := range []string{
+		`"type":"response.output_text.delta"`,
+		`"delta":"你好"`,
+		`"type":"response.completed"`,
+		`"total_tokens":3`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("Responses SSE 缺少 %s：\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "[DONE]") {
+		t.Error("Responses SSE 不应有 [DONE]")
+	}
+}
+
+// 白名单外模型 → 403（Anthropic 入口同样校验）。
+func TestMessagesWhitelist(t *testing.T) {
+	srv, st, am := newTestSrv(t)
+	uid, _ := st.CreateUser(context.Background(), "admin", "hash", "admin")
+	plain := "test-token-abc"
+	_, _ = st.CreateToken(context.Background(), uid, "t", auth.HashToken(plain), []string{"deepseek-chat"}, false)
+
+	rec := doV1(t, srv.Messages, am, st, plain, http.MethodPost, "/v1/messages", `{"model":"gpt-4o","max_tokens":10,"messages":[]}`)
+	if rec.Code != http.StatusForbidden {
+		t.Error("白名单外应 403，got", rec.Code)
+	}
+	var out map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &out)
+	if out["type"] != "error" {
+		t.Error("403 也应按 Anthropic 错误格式:", rec.Body.String())
 	}
 }
 

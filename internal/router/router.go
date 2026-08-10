@@ -49,24 +49,9 @@ func New(st *store.Store, chm *channel.Manager, strategy string, timeout time.Du
 // 查可用渠道 → 按策略选起点 → 渠道内多 key 轮换（429/401 冷却换 key）→
 // 5xx/网络错误换渠道重试（最多一轮）→ 4xx 直接透传。
 func (r *Router) Chat(ctx context.Context, model string, req *protocol.ChatRequest) (*protocol.ChatResponse, error) {
-	routes, err := r.store.ListChannelsByModel(ctx, model)
+	routes, seq, maxAttempts, err := r.resolveRoutes(ctx, model)
 	if err != nil {
-		return nil, fmt.Errorf("查询模型路由: %w", err)
-	}
-	if len(routes) == 0 {
-		return nil, ErrModelNotFound
-	}
-
-	// 渠道尝试序列 = 两轮轮换顺序（覆盖 5xx/网络错误「重试 1 次换渠道」；单渠道时重试同一家）。
-	order := r.channelOrder(model, len(routes))
-	seq := make([]int, 0, 2*len(routes))
-	seq = append(seq, order...)
-	seq = append(seq, order...)
-
-	// 总尝试上限：每渠道最多 2 次（1 次 key 轮换 + 1 次渠道重试），最多 4 次，防雪崩。
-	maxAttempts := 2 * len(routes)
-	if maxAttempts > 4 {
-		maxAttempts = 4
+		return nil, err
 	}
 
 	attempts := 0
@@ -87,14 +72,9 @@ func (r *Router) Chat(ctx context.Context, model string, req *protocol.ChatReque
 				break keyLoop
 			}
 			if route.ChannelType != "" && route.ChannelType != "openai" {
-				return nil, &upstream.Error{
-					StatusCode: http.StatusNotImplemented,
-					Type:       "not_implemented",
-					Message:    fmt.Sprintf("渠道类型 %s 暂不支持（M4 实现）", route.ChannelType),
-				}
+				return nil, unsupportedTypeError(route.ChannelType)
 			}
-			ir := *req
-			ir.Model = route.ModelName // 对外名（alias）→ 渠道内真实模型名
+			ir := r.prepareReq(req, route)
 			resp, err := upstream.NewOpenAI(route.BaseURL, key, r.client).Chat(ctx, &ir)
 			if err == nil {
 				return resp, nil
@@ -115,6 +95,107 @@ func (r *Router) Chat(ctx context.Context, model string, req *protocol.ChatReque
 		}
 	}
 	return nil, lastErr
+}
+
+// ChatStream 分发一次流式对话：语义与 Chat 相同，唯一差异——
+// 重试只在首个事件 emit 前进行；一旦开始输出（emitted），任何错误直接中断，
+// 避免客户端收到重复/错乱数据。
+func (r *Router) ChatStream(ctx context.Context, model string, req *protocol.ChatRequest, emit func(protocol.StreamEvent) error) error {
+	routes, seq, maxAttempts, err := r.resolveRoutes(ctx, model)
+	if err != nil {
+		return err
+	}
+
+	attempts := 0
+	emitted := false
+	var lastErr error = ErrModelNotFound
+	emitWrapped := func(ev protocol.StreamEvent) error {
+		emitted = true
+		return emit(ev)
+	}
+	for _, idx := range seq {
+		if attempts >= maxAttempts {
+			break
+		}
+		route := routes[idx]
+		ch := &store.Channel{ID: route.ChannelID, BalanceStrategy: route.BalanceStrategy}
+
+	keyLoop:
+		for attempts < maxAttempts {
+			attempts++
+			key, keyID, err := r.chm.SelectKey(ctx, ch)
+			if err != nil {
+				lastErr = err // 无可用 key → 换渠道
+				break keyLoop
+			}
+			if route.ChannelType != "" && route.ChannelType != "openai" {
+				return unsupportedTypeError(route.ChannelType)
+			}
+			ir := r.prepareReq(req, route)
+			err = upstream.NewOpenAI(route.BaseURL, key, r.client).ChatStream(ctx, &ir, emitWrapped)
+			if err == nil {
+				return nil
+			}
+			lastErr = err
+			var uperr *upstream.Error
+			if !errors.As(err, &uperr) {
+				return err // 本地异常直接返回
+			}
+			if emitted {
+				return err // 已开始输出：中断，不重试
+			}
+			switch {
+			case uperr.StatusCode == http.StatusTooManyRequests || uperr.StatusCode == http.StatusUnauthorized:
+				r.chm.MarkKeyFailed(ctx, keyID) // 冷却该 key，继续换下一个 key
+			case uperr.Retryable:
+				break keyLoop // 5xx/网络错误：换渠道
+			default:
+				return err // 4xx 直接透传
+			}
+		}
+	}
+	return lastErr
+}
+
+// resolveRoutes 查可用路由并给出渠道尝试序列（两轮轮换顺序）与总尝试上限。
+func (r *Router) resolveRoutes(ctx context.Context, model string) ([]store.ModelRoute, []int, int, error) {
+	routes, err := r.store.ListChannelsByModel(ctx, model)
+	if err != nil {
+		return nil, nil, 0, fmt.Errorf("查询模型路由: %w", err)
+	}
+	if len(routes) == 0 {
+		return nil, nil, 0, ErrModelNotFound
+	}
+	// 渠道尝试序列 = 两轮轮换顺序（覆盖 5xx/网络错误「重试 1 次换渠道」；单渠道时重试同一家）。
+	order := r.channelOrder(model, len(routes))
+	seq := make([]int, 0, 2*len(routes))
+	seq = append(seq, order...)
+	seq = append(seq, order...)
+	// 总尝试上限：每渠道最多 2 次（1 次 key 轮换 + 1 次渠道重试），最多 4 次，防雪崩。
+	maxAttempts := 2 * len(routes)
+	if maxAttempts > 4 {
+		maxAttempts = 4
+	}
+	return routes, seq, maxAttempts, nil
+}
+
+// prepareReq 复制请求并适配当前渠道：外部模型名 → 渠道内真实名；
+// 上游不支持 system 时折叠 system 消息进首条 user。
+func (r *Router) prepareReq(req *protocol.ChatRequest, route store.ModelRoute) protocol.ChatRequest {
+	ir := *req
+	ir.Model = route.ModelName
+	if !route.Caps.System {
+		protocol.FoldSystemIntoUser(&ir)
+	}
+	return ir
+}
+
+func unsupportedTypeError(chType string) error {
+	return &upstream.Error{
+		StatusCode: http.StatusNotImplemented,
+		Type:       "not_implemented",
+		Message:    fmt.Sprintf("渠道类型 %s 暂不支持（后续版本实现）", chType),
+	}
 }
 
 // channelOrder 返回渠道下标的尝试顺序：

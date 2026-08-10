@@ -185,3 +185,113 @@ func TestNormalizeBase(t *testing.T) {
 		t.Error("base_url 规范化后路径错误:", gotPath)
 	}
 }
+
+// --- ChatStream 流式 ---
+
+// TestChatStreamSuccess 多 chunk + 工具调用增量 + [DONE] → 事件序列正确。
+func TestChatStreamSuccess(t *testing.T) {
+	ss := `data: {"choices":[{"index":0,"delta":{"role":"assistant","content":"你"},"finish_reason":null}]}
+data: {"choices":[{"index":0,"delta":{"content":"好"},"finish_reason":null}]}
+data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"get_weather","arguments":""}}]},"finish_reason":null}]}
+data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"city\":"}}]},"finish_reason":null}]}
+data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":5,"completion_tokens":3,"total_tokens":8}}
+data: [DONE]
+`
+	var gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, ss)
+	}))
+	defer srv.Close()
+
+	var events []protocol.StreamEvent
+	err := newTestAdapter(t, srv).ChatStream(context.Background(), &protocol.ChatRequest{Model: "m"}, func(ev protocol.StreamEvent) error {
+		events = append(events, ev)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 上游请求必须带 stream:true
+	if !strings.Contains(gotBody, `"stream":true`) {
+		t.Error("上游请求应带 stream:true，got", gotBody)
+	}
+	// 空 delta 行不产生事件：2 text + start + delta + done = 5
+	if len(events) != 5 {
+		t.Fatalf("应产出 5 个事件（2 text + start + delta + done），got %d", len(events))
+	}
+	if events[0].Type != protocol.EventTextDelta || events[0].Delta != "你" {
+		t.Error("首个事件错误:", events[0])
+	}
+	if events[2].Type != protocol.EventToolCallStart || events[2].ToolCall.ID != "call_1" || events[2].ToolCall.Name != "get_weather" {
+		t.Error("tool_call_start 错误:", events[2])
+	}
+	if events[3].Type != protocol.EventToolCallDelta || events[3].ToolCall.Arguments != `{"city":` {
+		t.Error("tool_call_delta 错误:", events[3])
+	}
+	done := events[4]
+	if done.Type != protocol.EventDone || done.FinishReason != "tool_calls" || done.Usage == nil || done.Usage.TotalTokens != 8 {
+		t.Error("done 事件错误:", done)
+	}
+}
+
+// 上游 4xx → *Error（流式同非流式）。
+func TestChatStreamHTTPError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = io.WriteString(w, `{"error": {"message": "bad key", "type": "authentication_error"}}`)
+	}))
+	defer srv.Close()
+
+	err := newTestAdapter(t, srv).ChatStream(context.Background(), &protocol.ChatRequest{Model: "m"}, func(ev protocol.StreamEvent) error {
+		return nil
+	})
+	var uperr *Error
+	if !errors.As(err, &uperr) {
+		t.Fatalf("应返回 *Error，got %v", err)
+	}
+	if uperr.StatusCode != http.StatusUnauthorized {
+		t.Error("应保留 401 状态码:", uperr)
+	}
+}
+
+// 流中非法行 → 错误（不可重试）。
+func TestChatStreamBadLine(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: not-json\n\n")
+	}))
+	defer srv.Close()
+
+	err := newTestAdapter(t, srv).ChatStream(context.Background(), &protocol.ChatRequest{Model: "m"}, func(ev protocol.StreamEvent) error {
+		return nil
+	})
+	if err == nil {
+		t.Fatal("非法流式行应报错")
+	}
+	var uperr *Error
+	if !errors.As(err, &uperr) {
+		t.Fatalf("应返回 *Error，got %v", err)
+	}
+	if uperr.Retryable {
+		t.Error("流中解析错误不应可重试")
+	}
+}
+
+// emit 返回错误（客户端断连）→ 立即中止。
+func TestChatStreamEmitError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"},\"finish_reason\":null}]}\n\n")
+	}))
+	defer srv.Close()
+
+	err := newTestAdapter(t, srv).ChatStream(context.Background(), &protocol.ChatRequest{Model: "m"}, func(ev protocol.StreamEvent) error {
+		return errors.New("客户端断开")
+	})
+	if err == nil || err.Error() != "客户端断开" {
+		t.Error("emit 错误应原样返回，got", err)
+	}
+}

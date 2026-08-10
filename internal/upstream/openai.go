@@ -2,6 +2,7 @@
 package upstream
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -52,6 +53,60 @@ func (a *OpenAIAdapter) Chat(ctx context.Context, req *protocol.ChatRequest) (*p
 		return nil, &Error{Message: err.Error(), Retryable: true}
 	}
 	return ir, nil
+}
+
+// ChatStream 流式对话：IR → OpenAI 请求（stream:true）→ SSE 逐行解析 → StreamEvent 回调。
+// emit 返回错误（客户端断连）时立即中止。HTTP 非 2xx 返回 *Error（同 Chat）。
+func (a *OpenAIAdapter) ChatStream(ctx context.Context, req *protocol.ChatRequest, emit func(protocol.StreamEvent) error) error {
+	ir := *req
+	ir.Stream = true
+	body, err := protocol.SerializeOpenAIChatRequest(&ir)
+	if err != nil {
+		return &Error{Message: "序列化上游请求失败: " + err.Error()}
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, a.baseURL+"/v1/chat/completions", bytes.NewReader(body))
+	if err != nil {
+		return &Error{Message: "构造上游请求失败: " + err.Error()}
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Authorization", "Bearer "+a.apiKey)
+
+	resp, err := a.client.Do(httpReq)
+	if err != nil {
+		return &Error{Message: "调用上游失败: " + err.Error(), Retryable: true}
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+		return parseUpstreamError(resp.StatusCode, raw)
+	}
+
+	parser := protocol.NewOpenAIStreamParser()
+	sc := bufio.NewScanner(resp.Body)
+	sc.Buffer(make([]byte, 64*1024), 1<<20) // 单行（chunk）上限 1MB
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if !strings.HasPrefix(line, "data:") {
+			continue // 忽略空行/注释行
+		}
+		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if data == "" {
+			continue
+		}
+		evs, err := parser.Feed(data)
+		if err != nil {
+			return &Error{Message: "解析上游流式响应失败: " + err.Error()}
+		}
+		for _, ev := range evs {
+			if err := emit(ev); err != nil {
+				return err // 客户端断连等
+			}
+		}
+	}
+	if err := sc.Err(); err != nil {
+		return &Error{Message: "读取上游流式响应失败: " + err.Error(), Retryable: true}
+	}
+	return nil
 }
 
 // parseUpstreamError 从上游错误响应提取 {error:{message,type}}，取不到则用响应体摘要。

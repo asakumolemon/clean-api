@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -287,7 +288,7 @@ func TestChatAlias(t *testing.T) {
 	}
 }
 
-// 渠道类型非 openai（M4 才支持）→ 501。
+// 渠道类型非 openai（M4 后续才支持）→ 501。
 func TestChatUnsupportedType(t *testing.T) {
 	st, rt := newTestEnv(t, "random")
 	mock := chatMock(t, "x")
@@ -304,4 +305,173 @@ func TestChatUnsupportedType(t *testing.T) {
 	if mock.reqs.Load() != 0 {
 		t.Error("不应发上游请求")
 	}
+}
+
+// --- ChatStream 流式路由 ---
+
+// streamMock 返回固定 SSE 内容的上游。
+func streamMock(t *testing.T, sse string, recordBody func(string)) *countedServer {
+	return newCountedServer(t, func(n int64, w http.ResponseWriter, r *http.Request) {
+		if recordBody != nil {
+			b, _ := io.ReadAll(r.Body)
+			recordBody(string(b))
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, sse)
+	})
+}
+
+const streamSSE = `data: {"choices":[{"index":0,"delta":{"content":"你"},"finish_reason":null}]}
+data: {"choices":[{"index":0,"delta":{"content":"好"},"finish_reason":null}]}
+data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":1,"total_tokens":3}}
+data: [DONE]
+`
+
+// 流式首事件前的 429：冷却 key 后换 key 重试，成功。
+func TestChatStreamRetryBeforeEmit(t *testing.T) {
+	st, rt := newTestEnv(t, "random")
+	mock := newCountedServer(t, func(n int64, w http.ResponseWriter, r *http.Request) {
+		if n == 1 { // 第一个 key → 429（未发任何事件）
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, streamSSE)
+	})
+	chID := addChannel(t, st, "主渠道", "openai", mock.srv.URL, []string{"sk-1", "sk-2"}, map[string]store.Capabilities{"m": {}})
+	if err := st.UpdateChannel(context.Background(), chID, "主渠道", "openai", mock.srv.URL, "active", 1, "round_robin"); err != nil {
+		t.Fatal(err)
+	}
+
+	var got []string
+	err := rt.ChatStream(context.Background(), "m", chatReq("m"), func(ev protocol.StreamEvent) error {
+		got = append(got, ev.Type+":"+ev.Delta)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 || got[0] != "text_delta:你" || got[2] != "done:" {
+		t.Error("事件序列错误:", got)
+	}
+	if mock.reqs.Load() != 2 {
+		t.Error("应请求 2 次（key1 429 + key2 成功），got", mock.reqs.Load())
+	}
+	keys, _ := st.ListChannelKeys(context.Background(), chID)
+	if !keys[0].CooldownUntil.Valid {
+		t.Error("key1 应被标记冷却")
+	}
+}
+
+// 已 emit 后出错：不再换渠道重试（上游只被调用 1 次）。
+func TestChatStreamNoRetryAfterEmit(t *testing.T) {
+	st, rt := newTestEnv(t, "round_robin") // round_robin 保证先试坏渠道（index 0）
+	// 第一个渠道：先发一个 chunk，再发非法行触发流中错误
+	bad := newCountedServer(t, func(n int64, w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"你\"},\"finish_reason\":null}]}\n\n")
+		_, _ = io.WriteString(w, "data: not-json\n\n")
+	})
+	good := chatMock(t, "不应被调用")
+	addChannel(t, st, "坏渠道", "openai", bad.srv.URL, []string{"sk-1"}, map[string]store.Capabilities{"m": {}})
+	addChannel(t, st, "好渠道", "openai", good.srv.URL, []string{"sk-2"}, map[string]store.Capabilities{"m": {}})
+
+	var got []string
+	err := rt.ChatStream(context.Background(), "m", chatReq("m"), func(ev protocol.StreamEvent) error {
+		got = append(got, ev.Type)
+		return nil
+	})
+	if err == nil {
+		t.Fatal("流中错误应返回")
+	}
+	if len(got) != 1 || got[0] != "text_delta" {
+		t.Error("应只收到 1 个事件后中断，got", got)
+	}
+	if bad.reqs.Load() != 1 || good.reqs.Load() != 0 {
+		t.Error("已 emit 后不应重试：坏渠道", bad.reqs.Load(), "好渠道", good.reqs.Load())
+	}
+}
+
+// 流式 4xx：首事件前直接透传，不重试。
+func TestChatStreamPassThrough4xx(t *testing.T) {
+	st, rt := newTestEnv(t, "random")
+	mock := newCountedServer(t, func(n int64, w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = io.WriteString(w, `{"error": {"message": "参数错误", "type": "invalid_request_error"}}`)
+	})
+	addChannel(t, st, "渠道", "openai", mock.srv.URL, []string{"sk-1"}, map[string]store.Capabilities{"m": {}})
+
+	err := rt.ChatStream(context.Background(), "m", chatReq("m"), func(ev protocol.StreamEvent) error { return nil })
+	var uperr *upstream.Error
+	if !errors.As(err, &uperr) || uperr.StatusCode != http.StatusBadRequest {
+		t.Fatalf("应透传 400，got %v", err)
+	}
+	if mock.reqs.Load() != 1 {
+		t.Error("4xx 不应重试，got", mock.reqs.Load())
+	}
+}
+
+// system 折叠：模型能力不支持 system 时，折叠进首条 user；支持时原样透传。
+func TestChatSystemFold(t *testing.T) {
+	ctx := context.Background()
+	newReq := func() *protocol.ChatRequest {
+		return &protocol.ChatRequest{
+			Model: "m",
+			Messages: []protocol.Message{
+				{Role: "system", Content: []protocol.ContentPart{{Type: "text", Text: "你是助手"}}},
+				{Role: "user", Content: []protocol.ContentPart{{Type: "text", Text: "你好"}}},
+			},
+		}
+	}
+	checkBody := func(t *testing.T, body string, wantSystem bool) {
+		t.Helper()
+		var sent struct {
+			Messages []struct {
+				Role    string `json:"role"`
+				Content string `json:"content"`
+			} `json:"messages"`
+		}
+		if err := json.Unmarshal([]byte(body), &sent); err != nil {
+			t.Fatal(err)
+		}
+		if wantSystem {
+			// 支持 system：原样透传 system + user 两条
+			if len(sent.Messages) != 2 || sent.Messages[0].Role != "system" {
+				t.Errorf("支持 system 时应原样透传，got %d 条: %s", len(sent.Messages), body)
+			}
+		} else {
+			// 不支持 system：折叠后只剩 1 条 user（前缀含 system 文本）
+			if len(sent.Messages) != 1 || sent.Messages[0].Role != "user" {
+				t.Errorf("不支持 system 时应折叠为 1 条 user，got %d 条: %s", len(sent.Messages), body)
+			}
+			if !strings.Contains(sent.Messages[0].Content, "你是助手") {
+				t.Error("system 文本应折叠进首条 user:", sent.Messages[0].Content)
+			}
+		}
+	}
+
+	// 能力不支持 system → 折叠
+	t.Run("不支持 system", func(t *testing.T) {
+		st, rt := newTestEnv(t, "random")
+		var got string
+		mock := streamMock(t, streamSSE, func(b string) { got = b })
+		addChannel(t, st, "渠道", "openai", mock.srv.URL, []string{"sk-1"},
+			map[string]store.Capabilities{"m": {System: false, Tools: true, Vision: false, JSONMode: true}})
+		if err := rt.ChatStream(ctx, "m", newReq(), func(ev protocol.StreamEvent) error { return nil }); err != nil {
+			t.Fatal(err)
+		}
+		checkBody(t, got, false)
+	})
+	// 能力支持 system → 原样
+	t.Run("支持 system", func(t *testing.T) {
+		st, rt := newTestEnv(t, "random")
+		var got string
+		mock := streamMock(t, streamSSE, func(b string) { got = b })
+		addChannel(t, st, "渠道", "openai", mock.srv.URL, []string{"sk-1"},
+			map[string]store.Capabilities{"m": {System: true}})
+		if err := rt.ChatStream(ctx, "m", newReq(), func(ev protocol.StreamEvent) error { return nil }); err != nil {
+			t.Fatal(err)
+		}
+		checkBody(t, got, true)
+	})
 }

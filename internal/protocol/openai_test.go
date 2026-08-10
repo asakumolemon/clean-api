@@ -218,3 +218,186 @@ func TestSerializeEmptyChoices(t *testing.T) {
 		t.Error("空 choices 应输出空数组:", string(out))
 	}
 }
+
+// --- OpenAIStreamParser（上游流式解析） ---
+
+func TestOpenAIStreamParserTextAndUsage(t *testing.T) {
+	p := NewOpenAIStreamParser()
+	feed := func(data string) []StreamEvent {
+		t.Helper()
+		evs, err := p.Feed(data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return evs
+	}
+	var all []StreamEvent
+	all = append(all, feed(`{"choices":[{"index":0,"delta":{"role":"assistant","content":"你好"},"finish_reason":null}]}`)...)
+	all = append(all, feed(`{"choices":[{"index":0,"delta":{"content":"，世界"},"finish_reason":null}]}`)...)
+	all = append(all, feed(`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":3,"total_tokens":8}}`)...)
+
+	all = append(all, feed("[DONE]")...)
+
+	// 空 delta 的块不产生事件：2 个 text_delta + 1 个 done
+	if len(all) != 3 {
+		t.Fatalf("应产出 3 个事件（2 text_delta + done），got %d", len(all))
+	}
+	if all[0].Type != EventTextDelta || all[0].Delta != "你好" || all[1].Delta != "，世界" {
+		t.Error("文本增量错误:", all[:2])
+	}
+	done := all[2]
+	if done.Type != EventDone || done.FinishReason != "stop" {
+		t.Error("done 事件错误:", done)
+	}
+	if done.Usage == nil || done.Usage.TotalTokens != 8 || done.Usage.PromptTokens != 5 {
+		t.Error("usage 应缓存到 done 事件:", done.Usage)
+	}
+}
+
+func TestOpenAIStreamParserToolCalls(t *testing.T) {
+	p := NewOpenAIStreamParser()
+	feed := func(data string) []StreamEvent {
+		t.Helper()
+		evs, err := p.Feed(data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return evs
+	}
+	var all []StreamEvent
+	all = append(all, feed(`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"get_weather","arguments":""}}]},"finish_reason":null}]}`)...)
+	all = append(all, feed(`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"city\":"}}]},"finish_reason":null}]}`)...)
+	all = append(all, feed(`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"北京\"}"}}]},"finish_reason":null}]}`)...)
+	all = append(all, feed(`{"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`)...)
+	all = append(all, feed("[DONE]")...)
+
+	if len(all) != 4 {
+		t.Fatalf("应产出 4 个事件（start+2 delta+done），got %d", len(all))
+	}
+	start := all[0]
+	if start.Type != EventToolCallStart || start.ToolCall.Index != 0 || start.ToolCall.ID != "call_1" || start.ToolCall.Name != "get_weather" {
+		t.Error("tool_call_start 错误:", start)
+	}
+	if all[1].Type != EventToolCallDelta || all[1].ToolCall.Arguments != `{"city":` {
+		t.Error("第一个 arguments 增量错误:", all[1])
+	}
+	if all[2].ToolCall.Arguments != `"北京"}` {
+		t.Error("第二个 arguments 增量错误:", all[2])
+	}
+	if all[3].FinishReason != "tool_calls" {
+		t.Error("done 应带 finish_reason=tool_calls:", all[3])
+	}
+}
+
+func TestOpenAIStreamParserGarbage(t *testing.T) {
+	p := NewOpenAIStreamParser()
+	if _, err := p.Feed(`not json`); err == nil {
+		t.Error("非法行应报错")
+	}
+}
+
+// --- OpenAIChatStreamWriter（出口流编码） ---
+
+func TestOpenAIChatStreamWriterSequence(t *testing.T) {
+	var buf strings.Builder
+	w := NewOpenAIChatStreamWriter(&buf, "chatcmpl-1", "deepseek-chat", 1700000000)
+
+	evs := []StreamEvent{
+		{Type: EventTextDelta, Delta: "你"},
+		{Type: EventToolCallStart, ToolCall: ToolCallDelta{Index: 0, ID: "call_1", Name: "get_weather"}},
+		{Type: EventToolCallDelta, ToolCall: ToolCallDelta{Index: 0, Arguments: `{"city":"北京"}`}},
+		{Type: EventDone, FinishReason: "tool_calls", Usage: &Usage{PromptTokens: 3, CompletionTokens: 2, TotalTokens: 5}},
+	}
+	for _, ev := range evs {
+		if err := w.WriteEvent(ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := buf.String()
+	if !strings.HasSuffix(got, "data: [DONE]\n\n") {
+		t.Error("应以 [DONE] 结尾:", got)
+	}
+	lines := strings.Split(strings.TrimSpace(got), "\n")
+	chunks := []string{}
+	for _, l := range lines {
+		if strings.HasPrefix(l, "data: ") && !strings.HasPrefix(l, "data: [DONE]") {
+			chunks = append(chunks, strings.TrimPrefix(l, "data: "))
+		}
+	}
+	if len(chunks) != 4 {
+		t.Fatalf("应有 4 个 chunk（text+start+delta+done），got %d", len(chunks))
+	}
+	var first struct {
+		ID      string `json:"id"`
+		Object  string `json:"object"`
+		Choices []struct {
+			Delta struct {
+				Content string `json:"content"`
+			} `json:"delta"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal([]byte(chunks[0]), &first); err != nil {
+		t.Fatal(err)
+	}
+	if first.ID != "chatcmpl-1" || first.Object != "chat.completion.chunk" || first.Choices[0].Delta.Content != "你" {
+		t.Error("chunk 格式错误:", chunks[0])
+	}
+	// 工具调用 chunk：start 带 id/name，delta 只带 arguments
+	if !strings.Contains(chunks[1], `"id":"call_1"`) || !strings.Contains(chunks[1], `"name":"get_weather"`) {
+		t.Error("tool_call_start chunk 错误:", chunks[1])
+	}
+	if !strings.Contains(chunks[2], `"arguments":"{\"city\":\"北京\"}"`) {
+		t.Error("tool_call_delta chunk 错误:", chunks[2])
+	}
+	if !strings.Contains(chunks[3], `"finish_reason":"tool_calls"`) || !strings.Contains(chunks[3], `"total_tokens":5`) {
+		t.Error("done chunk 应带 finish_reason 与 usage:", chunks[3])
+	}
+}
+
+// 无 done 直接 Finish：补写 [DONE] 防客户端挂起。
+func TestOpenAIChatStreamWriterFinishWithoutDone(t *testing.T) {
+	var buf strings.Builder
+	w := NewOpenAIChatStreamWriter(&buf, "x", "m", 0)
+	_ = w.WriteEvent(StreamEvent{Type: EventTextDelta, Delta: "hi"})
+	if err := w.Finish(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(buf.String(), "data: [DONE]\n\n") {
+		t.Error("Finish 应补写 [DONE]:", buf.String())
+	}
+}
+
+// --- FoldSystemIntoUser ---
+
+func TestFoldSystemIntoUser(t *testing.T) {
+	req := &ChatRequest{Messages: []Message{
+		{Role: "system", Content: []ContentPart{{Type: "text", Text: "你是助手"}}},
+		{Role: "system", Content: []ContentPart{{Type: "text", Text: "第二段"}}},
+		{Role: "user", Content: []ContentPart{{Type: "text", Text: "你好"}}},
+		{Role: "user", Content: []ContentPart{{Type: "text", Text: "再来"}}},
+	}}
+	FoldSystemIntoUser(req)
+	if len(req.Messages) != 2 {
+		t.Fatalf("system 应被移除，剩 2 条，got %d", len(req.Messages))
+	}
+	first := req.Messages[0]
+	if first.Role != "user" || first.Content[0].Text != "你是助手\n\n第二段\n\n你好" {
+		t.Error("system 应折叠进首条 user 前缀:", first)
+	}
+	// 多分片 user：system 前缀应插入到最前（原 2 分片 + 前缀 = 3）
+	req2 := &ChatRequest{Messages: []Message{
+		{Role: "system", Content: []ContentPart{{Type: "text", Text: "S"}}},
+		{Role: "user", Content: []ContentPart{{Type: "text", Text: "看图"}, {Type: "image", ImageURL: "data:image/png;base64,AA"}}},
+	}}
+	FoldSystemIntoUser(req2)
+	c := req2.Messages[0].Content
+	if len(c) != 3 || c[0].Text != "S" || c[1].Text != "看图" || c[2].Type != "image" {
+		t.Error("多分片 user 折叠错误:", req2.Messages[0])
+	}
+	// 无 user 消息：原样保留
+	req3 := &ChatRequest{Messages: []Message{{Role: "system", Content: []ContentPart{{Type: "text", Text: "S"}}}}}
+	FoldSystemIntoUser(req3)
+	if len(req3.Messages) != 1 || req3.Messages[0].Role != "system" {
+		t.Error("无 user 消息不应折叠:", req3.Messages)
+	}
+}
