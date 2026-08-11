@@ -3,7 +3,9 @@
 package channel
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
@@ -87,23 +89,57 @@ func (h *HealthChecker) CheckOnce(ctx context.Context) {
 	}
 }
 
-// ping 用渠道真实 key 发最小请求（GET /v1/models），2xx 视为健康。
+// ping 用渠道真实 key 发最小请求，2xx 视为健康。
+// openai/responses 发 GET /v1/models；anthropic 发 POST /v1/messages（最小 payload），
+// 模型名取渠道内启用模型，避免上游 400 误判。
 func (h *HealthChecker) ping(ctx context.Context, ch store.Channel) bool {
 	key, _, err := h.chm.SelectKey(ctx, &ch)
 	if err != nil {
 		return false // 无可用 key（未配置/全冷却）视为不健康
 	}
+	if ch.Type == "anthropic" {
+		return h.pingAnthropic(ctx, ch, key)
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, normalizeBase(ch.BaseURL)+"/v1/models", nil)
 	if err != nil {
 		return false
 	}
-	switch ch.Type {
-	case "anthropic":
-		req.Header.Set("x-api-key", key)
-		req.Header.Set("anthropic-version", "2023-06-01")
-	default: // openai / responses
-		req.Header.Set("Authorization", "Bearer "+key)
+	req.Header.Set("Authorization", "Bearer "+key)
+	resp, err := h.client.Do(req)
+	if err != nil {
+		return false
 	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
+	return resp.StatusCode >= 200 && resp.StatusCode < 300
+}
+
+// pingAnthropic 对 anthropic 类型渠道发最小 Messages 请求。
+func (h *HealthChecker) pingAnthropic(ctx context.Context, ch store.Channel, key string) bool {
+	model := ""
+	// 取渠道内任一启用模型名（Anthropic 校验模型名，占位名会 400 误判）
+	models, _ := h.store.ListModelsByChannel(ctx, ch.ID)
+	for _, m := range models {
+		if m.Enabled {
+			model = m.Name
+			break
+		}
+	}
+	if model == "" {
+		return false // 无启用模型可 ping，视为不健康
+	}
+	body, _ := json.Marshal(map[string]any{
+		"model":      model,
+		"max_tokens": 1,
+		"messages":   []any{map[string]any{"role": "user", "content": "ping"}},
+	})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, normalizeBase(ch.BaseURL)+"/v1/messages", bytes.NewReader(body))
+	if err != nil {
+		return false
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-api-key", key)
+	req.Header.Set("anthropic-version", "2023-06-01")
 	resp, err := h.client.Do(req)
 	if err != nil {
 		return false

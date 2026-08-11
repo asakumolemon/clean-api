@@ -63,8 +63,14 @@ func chatUpstream(t *testing.T, respondContent string) (*httptest.Server, *atomi
 
 func addTestChannel(t *testing.T, s *store.Store, baseURL string) {
 	t.Helper()
+	addTestChannelType(t, s, "openai", baseURL)
+}
+
+// addTestChannelType 建指定类型的测试渠道（openai/anthropic）。
+func addTestChannelType(t *testing.T, s *store.Store, chType, baseURL string) {
+	t.Helper()
 	ctx := context.Background()
-	chID, err := s.CreateChannel(ctx, "测试渠道", "openai", baseURL)
+	chID, err := s.CreateChannel(ctx, "测试渠道", chType, baseURL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,8 +153,8 @@ func TestChatCompletionsFullFlow(t *testing.T) {
 		Object  string `json:"object"`
 		ID      string `json:"id"`
 		Choices []struct {
-			Index        int `json:"index"`
-			Message      struct {
+			Index   int `json:"index"`
+			Message struct {
 				Role    string `json:"role"`
 				Content string `json:"content"`
 			} `json:"message"`
@@ -435,9 +441,9 @@ func TestMessagesNonStreamToolCalls(t *testing.T) {
 		Type       string `json:"type"`
 		StopReason string `json:"stop_reason"`
 		Content    []struct {
-			Type  string `json:"type"`
-			ID    string `json:"id"`
-			Name  string `json:"name"`
+			Type  string         `json:"type"`
+			ID    string         `json:"id"`
+			Name  string         `json:"name"`
 			Input map[string]any `json:"input"`
 		} `json:"content"`
 		Usage struct {
@@ -607,8 +613,85 @@ func TestResponsesEmptyInputRejected(t *testing.T) {
 	}
 }
 
-// --- Responses 入口 ---
+// --- Anthropic 原生上游（渠道类型 anthropic） ---
 
+// 下游 OpenAI Chat 入口 → anthropic 类型渠道：上游收到 Messages 格式请求，出口 OpenAI 格式。
+func TestChatToAnthropicUpstream(t *testing.T) {
+	srv, st, am := newTestSrv(t)
+	var gotKey, gotPath, gotBody string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotKey = r.Header.Get("x-api-key")
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"msg_01","type":"message","role":"assistant","model":"claude-sonnet-4-20250514","content":[{"type":"text","text":"你好"}],"stop_reason":"end_turn","usage":{"input_tokens":5,"output_tokens":3}}`)
+	}))
+	t.Cleanup(upstream.Close)
+
+	plain := newUserToken(t, st, "deepseek-chat")
+	addTestChannelType(t, st, "anthropic", upstream.URL)
+
+	rec := doChat(t, srv, am, st, plain, `{"model":"deepseek-chat","messages":[{"role":"user","content":"hi"}]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("应 200，got %d: %s", rec.Code, rec.Body.String())
+	}
+	if gotPath != "/v1/messages" {
+		t.Errorf("anthropic 渠道应发 /v1/messages，got %s", gotPath)
+	}
+	if gotKey != "sk-test" {
+		t.Error("anthropic 渠道应带 x-api-key 头，got", gotKey)
+	}
+	// 上游收到 Messages 格式（model 用渠道内真实模型名）
+	if !strings.Contains(gotBody, `"model":"deepseek-chat"`) || !strings.Contains(gotBody, `"max_tokens"`) {
+		t.Errorf("上游应收到 Anthropic 格式请求体：%s", gotBody)
+	}
+	// 出口仍为 OpenAI 格式
+	var out map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	obj, _ := out["object"].(string)
+	if obj != "chat.completion" {
+		t.Errorf("出口应为 OpenAI 格式，got %s", rec.Body.String())
+	}
+}
+
+// 下游 Anthropic 入口 → anthropic 类型渠道：全链路 Anthropic 格式互通。
+func TestAnthropicToAnthropicUpstream(t *testing.T) {
+	srv, st, am := newTestSrv(t)
+	var gotPath, gotBody string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"msg_02","type":"message","role":"assistant","model":"claude-sonnet-4-20250514","content":[{"type":"text","text":"你好"}],"stop_reason":"end_turn","usage":{"input_tokens":4,"output_tokens":2}}`)
+	}))
+	t.Cleanup(upstream.Close)
+
+	plain := newUserToken(t, st, "deepseek-chat")
+	addTestChannelType(t, st, "anthropic", upstream.URL)
+
+	body := `{"model":"deepseek-chat","max_tokens":100,"messages":[{"role":"user","content":"hi"}]}`
+	rec := doV1(t, srv.Messages, am, st, plain, http.MethodPost, "/v1/messages", body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("应 200，got %d: %s", rec.Code, rec.Body.String())
+	}
+	if gotPath != "/v1/messages" {
+		t.Errorf("应发 /v1/messages，got %s", gotPath)
+	}
+	// 上游收到 Anthropic 格式（含 max_tokens 透传）
+	if !strings.Contains(gotBody, `"max_tokens":100`) {
+		t.Errorf("max_tokens 应透传：%s", gotBody)
+	}
+	// 出口 Anthropic 格式
+	if !strings.Contains(rec.Body.String(), `"type":"message"`) {
+		t.Errorf("出口应为 Anthropic 格式：%s", rec.Body.String())
+	}
+}
+
+// --- Responses 入口 ---
 // Responses 非流式：instructions/function_call_output → 上游 OpenAI 格式；出口为 Responses 格式。
 func TestResponsesNonStream(t *testing.T) {
 	srv, st, am := newTestSrv(t)

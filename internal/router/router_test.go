@@ -288,11 +288,34 @@ func TestChatAlias(t *testing.T) {
 	}
 }
 
-// 渠道类型非 openai（M4 后续才支持）→ 501。
+// anthropic 渠道已支持：路由到 AnthropicAdapter（上游收到 x-api-key 头 + Messages 格式请求）。
+func TestChatAnthropicChannel(t *testing.T) {
+	st, rt := newTestEnv(t, "random")
+	var gotKey string
+	mock := newCountedServer(t, func(n int64, w http.ResponseWriter, r *http.Request) {
+		gotKey = r.Header.Get("x-api-key")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"msg_01","type":"message","role":"assistant","model":"claude-sonnet-4-20250514","content":[{"type":"text","text":"你好"}],"stop_reason":"end_turn","usage":{"input_tokens":5,"output_tokens":3}}`)
+	})
+	addChannel(t, st, "渠道", "anthropic", mock.srv.URL, []string{"sk-1"}, map[string]store.Capabilities{"m": {}})
+
+	res, err := rt.Chat(context.Background(), "m", chatReq("m"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Resp.Choices) != 1 || res.Resp.Choices[0].Message.Content[0].Text != "你好" {
+		t.Error("Anthropic 上游响应未正确解析:", res.Resp)
+	}
+	if gotKey != "sk-1" {
+		t.Error("应带 x-api-key 头，got", gotKey)
+	}
+}
+
+// 未知渠道类型（厂商类型等，无对应适配器）→ 501。
 func TestChatUnsupportedType(t *testing.T) {
 	st, rt := newTestEnv(t, "random")
 	mock := chatMock(t, "x")
-	addChannel(t, st, "渠道", "anthropic", mock.srv.URL, []string{"sk-1"}, map[string]store.Capabilities{"m": {}})
+	addChannel(t, st, "渠道", "qianfan", mock.srv.URL, []string{"sk-1"}, map[string]store.Capabilities{"m": {}})
 
 	_, err := rt.Chat(context.Background(), "m", chatReq("m"))
 	var uperr *upstream.Error
@@ -300,7 +323,7 @@ func TestChatUnsupportedType(t *testing.T) {
 		t.Fatalf("应返回 *upstream.Error，got %v", err)
 	}
 	if uperr.StatusCode != http.StatusNotImplemented {
-		t.Error("非 openai 渠道应 501，got", uperr.StatusCode)
+		t.Error("未知类型渠道应 501，got", uperr.StatusCode)
 	}
 	if mock.reqs.Load() != 0 {
 		t.Error("不应发上游请求")

@@ -1,5 +1,5 @@
 // Package upstream 上游适配器：把 IR 按上游协议序列化并发起调用。
-// M3 仅实现 OpenAI 兼容适配器的非流式 Chat；ChatStream/Models/Ping 为 M4 扩展点。
+// 支持 OpenAI Chat 兼容与 Anthropic Messages 兼容；Models/Ping 为后续扩展点。
 package upstream
 
 import (
@@ -13,7 +13,9 @@ import (
 type Upstream interface {
 	// Chat 非流式对话。
 	Chat(ctx context.Context, req *protocol.ChatRequest) (*protocol.ChatResponse, error)
-	// M4 扩展：ChatStream(ctx, *ChatRequest, func(StreamEvent) error) error、Models()、Ping()
+	// ChatStream 流式对话：SSE → StreamEvent 事件流（emit 返回错误即客户端断连，应中止）。
+	ChatStream(ctx context.Context, req *protocol.ChatRequest, emit func(protocol.StreamEvent) error) error
+	// 扩展点：Models()（拉模型列表）、Ping()（健康检查）。
 }
 
 // Error 上游调用错误：状态码 + OpenAI 风格错误信息。

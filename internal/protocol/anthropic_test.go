@@ -274,3 +274,220 @@ func TestAnthropicStreamWriterSynthesizeToolID(t *testing.T) {
 		t.Error("缺 id 时应合成 toolu_0：", buf.String())
 	}
 }
+
+// --- 上游序列化（IR → Anthropic 请求体） ---
+
+func TestSerializeAnthropicMessagesRequest(t *testing.T) {
+	mt := 128
+	req := &ChatRequest{
+		Model:      "claude-sonnet-4-20250514",
+		MaxTokens:  &mt,
+		ToolChoice: map[string]any{"type": "auto"},
+		Messages: []Message{
+			{Role: "system", Content: []ContentPart{{Type: "text", Text: "系统提示"}}},
+			{Role: "user", Content: []ContentPart{{Type: "text", Text: "你好"}}},
+			{Role: "assistant", Content: nil, ToolCalls: []ToolCall{{ID: "toolu_1", Name: "get_weather", Arguments: json.RawMessage(`{"city":"北京"}`)}}},
+			{Role: "tool", ToolCallID: "toolu_1", Content: []ContentPart{{Type: "text", Text: "晴"}}},
+		},
+		Tools: []Tool{{Type: "function", Function: ToolFunction{Name: "get_weather", Description: "查天气", Parameters: json.RawMessage(`{"type":"object"}`)}}},
+	}
+	out, err := SerializeAnthropicMessagesRequest(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(out)
+	for _, want := range []string{
+		`"max_tokens":128`,
+		`"system":"系统提示"`,
+		`"tool_choice":{"type":"auto"}`,
+		`"name":"get_weather"`,
+		`"input_schema":{"type":"object"}`,
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("请求体缺少 %s：%s", want, s)
+		}
+	}
+	// assistant 工具调用 → tool_use 块
+	if !strings.Contains(s, `"type":"tool_use"`) || !strings.Contains(s, `"id":"toolu_1"`) {
+		t.Error("assistant 工具调用应序列化为 tool_use 块:", s)
+	}
+	// tool 消息 → user 内的 tool_result 块
+	if !strings.Contains(s, `"type":"tool_result"`) || !strings.Contains(s, `"tool_use_id":"toolu_1"`) {
+		t.Error("tool 消息应序列化为 tool_result 块:", s)
+	}
+}
+
+func TestSerializeAnthropicMaxTokensDefault(t *testing.T) {
+	req := &ChatRequest{Model: "m", Messages: []Message{{Role: "user", Content: []ContentPart{{Type: "text", Text: "hi"}}}}}
+	out, err := SerializeAnthropicMessagesRequest(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), `"max_tokens":1024`) {
+		t.Error("缺 max_tokens 应给默认 1024：", string(out))
+	}
+}
+
+func TestNormalizeAnthropicToolChoice(t *testing.T) {
+	cases := []struct {
+		name  string
+		input any
+		want  string
+	}{
+		{"string_auto", "auto", `{"type":"auto"}`},
+		{"string_none", "none", `{"type":"none"}`},
+		{"string_required", "required", `{"type":"any"}`},
+		{"openai_legacy_function", map[string]any{"type": "function", "function": map[string]any{"name": "get_weather"}}, `{"name":"get_weather","type":"tool"}`},
+		{"anthropic_tool", map[string]any{"type": "tool", "name": "get_weather"}, `{"name":"get_weather","type":"tool"}`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := normalizeAnthropicToolChoice(c.input)
+			b, _ := json.Marshal(got)
+			if string(b) != c.want {
+				t.Errorf("tool_choice 归一化错误：got %s，want %s", b, c.want)
+			}
+		})
+	}
+}
+
+// --- 上游响应解析（Anthropic → IR） ---
+
+func TestParseAnthropicMessagesResponse(t *testing.T) {
+	body := `{
+		"id": "msg_01",
+		"type": "message",
+		"role": "assistant",
+		"model": "claude-sonnet-4-20250514",
+		"content": [
+			{"type": "text", "text": "我来查天气"},
+			{"type": "tool_use", "id": "toolu_1", "name": "get_weather", "input": {"city": "北京"}}
+		],
+		"stop_reason": "tool_use",
+		"usage": {"input_tokens": 10, "output_tokens": 5}
+	}`
+	resp, err := ParseAnthropicMessagesResponse([]byte(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.ID != "msg_01" || resp.Model != "claude-sonnet-4-20250514" {
+		t.Error("顶层字段解析错误:", resp)
+	}
+	if len(resp.Choices) != 1 {
+		t.Fatal("choices 应为 1 个")
+	}
+	c := resp.Choices[0]
+	if c.FinishReason != "tool_calls" {
+		t.Error("tool_use stop_reason 应映射为 tool_calls，got", c.FinishReason)
+	}
+	if len(c.Message.Content) != 1 || c.Message.Content[0].Text != "我来查天气" {
+		t.Error("文本块解析错误:", c.Message.Content)
+	}
+	if len(c.Message.ToolCalls) != 1 || c.Message.ToolCalls[0].Name != "get_weather" {
+		t.Error("tool_use 块解析错误:", c.Message.ToolCalls)
+	}
+	if resp.Usage.PromptTokens != 10 || resp.Usage.CompletionTokens != 5 || resp.Usage.TotalTokens != 15 {
+		t.Error("usage 映射错误:", resp.Usage)
+	}
+}
+
+func TestAnthropicStopReasonMappingIR(t *testing.T) {
+	cases := map[string]string{
+		"end_turn":   "stop",
+		"tool_use":   "tool_calls",
+		"max_tokens": "length",
+		"":           "stop",
+	}
+	for in, want := range cases {
+		if got := irFinishReason(in); got != want {
+			t.Errorf("stop_reason %q 应映射 %q，got %q", in, want, got)
+		}
+	}
+}
+
+// --- 上游流式解析（Anthropic SSE → StreamEvent） ---
+
+func TestAnthropicStreamParserTextAndDone(t *testing.T) {
+	p := NewAnthropicStreamParser()
+	feed := []string{
+		`{"type":"message_start","message":{"id":"msg_01","model":"claude-sonnet-4-20250514","usage":{"input_tokens":5,"output_tokens":0}}}`,
+		`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
+		`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"你好"}}`,
+		`{"type":"content_block_stop","index":0}`,
+		`{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":5,"output_tokens":3}}`,
+		`{"type":"message_stop"}`,
+	}
+	var evs []StreamEvent
+	for _, f := range feed {
+		got, err := p.Feed(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		evs = append(evs, got...)
+	}
+	var text string
+	var done *StreamEvent
+	for _, ev := range evs {
+		switch ev.Type {
+		case EventTextDelta:
+			text += ev.Delta
+		case EventDone:
+			d := ev
+			done = &d
+		}
+	}
+	if text != "你好" {
+		t.Errorf("文本增量应为「你好」，got %q", text)
+	}
+	if done == nil || done.FinishReason != "stop" {
+		t.Fatalf("done 事件错误: %+v", done)
+	}
+	if done.Usage == nil || done.Usage.PromptTokens != 5 || done.Usage.CompletionTokens != 3 {
+		t.Error("done 应带 usage:", done.Usage)
+	}
+}
+
+func TestAnthropicStreamParserToolCallSequence(t *testing.T) {
+	p := NewAnthropicStreamParser()
+	feed := []string{
+		`{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"get_weather","input":{}}}`,
+		`{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"city\":\"北京\"}"}}`,
+		`{"type":"content_block_stop","index":0}`,
+		`{"type":"message_delta","delta":{"stop_reason":"tool_use"}}`,
+		`{"type":"message_stop"}`,
+	}
+	var evs []StreamEvent
+	for _, f := range feed {
+		got, err := p.Feed(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		evs = append(evs, got...)
+	}
+	want := []string{EventToolCallStart, EventToolCallDelta, EventToolCallStop, EventDone}
+	if len(evs) != len(want) {
+		t.Fatalf("事件数应为 %d，got %d（%v）", len(want), len(evs), evs)
+	}
+	for i, w := range want {
+		if evs[i].Type != w {
+			t.Errorf("事件[%d] 应为 %s，got %s", i, w, evs[i].Type)
+		}
+	}
+	if evs[0].ToolCall.Name != "get_weather" || evs[0].ToolCall.ID != "toolu_1" {
+		t.Error("start 事件应带 name/id:", evs[0].ToolCall)
+	}
+	if !strings.Contains(evs[1].ToolCall.Arguments, "北京") {
+		t.Error("delta 事件应带参数增量:", evs[1].ToolCall.Arguments)
+	}
+	if evs[3].FinishReason != "tool_calls" {
+		t.Error("done finish_reason 应为 tool_calls，got", evs[3].FinishReason)
+	}
+}
+
+func TestAnthropicStreamParserError(t *testing.T) {
+	p := NewAnthropicStreamParser()
+	_, err := p.Feed(`{"type":"error","error":{"type":"overloaded_error","message":"上游过载"}}`)
+	if err == nil || !strings.Contains(err.Error(), "上游过载") {
+		t.Error("error 事件应返回错误:", err)
+	}
+}

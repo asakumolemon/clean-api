@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -122,5 +123,42 @@ func TestHealthCheckNoKey(t *testing.T) {
 	ch, _ := st.GetChannel(ctx, chID)
 	if ch.Status != "down" {
 		t.Errorf("无 key 渠道连续失败应 down，got %s", ch.Status)
+	}
+}
+
+// anthropic 渠道健康检查：发 POST /v1/messages（x-api-key 头 + 渠道内启用模型名）。
+func TestHealthCheckAnthropicChannel(t *testing.T) {
+	var gotMethod, gotPath, gotKey string
+	var gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod, gotPath, gotKey = r.Method, r.URL.Path, r.Header.Get("x-api-key")
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"type":"message"}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	st, hc, chID := newHealthEnv(t, srv, "anthropic")
+	ctx := context.Background()
+	// 同步一个启用模型，anthropic ping 需要真实模型名
+	if _, err := st.SyncModels(ctx, chID, map[string]store.Capabilities{"claude-sonnet-4-20250514": {}}, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+
+	hc.CheckOnce(ctx)
+	if gotMethod != http.MethodPost || gotPath != "/v1/messages" {
+		t.Errorf("anthropic ping 应 POST /v1/messages，got %s %s", gotMethod, gotPath)
+	}
+	if gotKey != "sk-1" {
+		t.Error("anthropic ping 应带 x-api-key 头，got", gotKey)
+	}
+	if !strings.Contains(gotBody, "claude-sonnet-4-20250514") || !strings.Contains(gotBody, "max_tokens") {
+		t.Errorf("anthropic ping 请求体应含模型名与 max_tokens：%s", gotBody)
+	}
+	// 2xx → 渠道保持 active
+	ch, _ := st.GetChannel(ctx, chID)
+	if ch.Status != "active" {
+		t.Errorf("anthropic 健康渠道应保持 active，got %s", ch.Status)
 	}
 }

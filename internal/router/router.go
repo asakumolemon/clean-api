@@ -93,11 +93,11 @@ func (r *Router) Chat(ctx context.Context, model string, req *protocol.ChatReque
 				lastErr = err // 无可用 key（未配置 / 全部冷却中）→ 换渠道
 				break keyLoop
 			}
-			if route.ChannelType != "" && route.ChannelType != "openai" {
+			if !supportedChannelType(route.ChannelType) {
 				return &ChatResult{ChannelID: lastChannelID}, unsupportedTypeError(route.ChannelType)
 			}
 			ir := r.prepareReq(req, route)
-			resp, err := upstream.NewOpenAI(route.BaseURL, key, r.client).Chat(ctx, &ir)
+			resp, err := newAdapter(route.ChannelType, route.BaseURL, key, r.client).Chat(ctx, &ir)
 			if err == nil {
 				return &ChatResult{Resp: resp, ChannelID: lastChannelID}, nil
 			}
@@ -153,11 +153,11 @@ func (r *Router) ChatStream(ctx context.Context, model string, req *protocol.Cha
 				lastErr = err // 无可用 key → 换渠道
 				break keyLoop
 			}
-			if route.ChannelType != "" && route.ChannelType != "openai" {
+			if !supportedChannelType(route.ChannelType) {
 				return lastChannelID, unsupportedTypeError(route.ChannelType)
 			}
 			ir := r.prepareReq(req, route)
-			err = upstream.NewOpenAI(route.BaseURL, key, r.client).ChatStream(ctx, &ir, emitWrapped)
+			err = newAdapter(route.ChannelType, route.BaseURL, key, r.client).ChatStream(ctx, &ir, emitWrapped)
 			if err == nil {
 				return lastChannelID, nil
 			}
@@ -213,6 +213,25 @@ func (r *Router) prepareReq(req *protocol.ChatRequest, route store.ModelRoute) p
 		protocol.FoldSystemIntoUser(&ir)
 	}
 	return ir
+}
+
+// supportedChannelType 渠道类型是否有对应上游适配器。
+// 当前支持 openai（默认）与 anthropic；responses 原生上游与未知厂商类型 → 501（留后续）。
+func supportedChannelType(chType string) bool {
+	switch chType {
+	case "", "openai", "anthropic":
+		return true
+	default:
+		return false
+	}
+}
+
+// newAdapter 按渠道类型构造上游适配器。
+func newAdapter(chType, baseURL, key string, client *http.Client) upstream.Upstream {
+	if chType == "anthropic" {
+		return upstream.NewAnthropic(baseURL, key, client)
+	}
+	return upstream.NewOpenAI(baseURL, key, client)
 }
 
 func unsupportedTypeError(chType string) error {
