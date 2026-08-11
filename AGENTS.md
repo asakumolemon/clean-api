@@ -22,7 +22,7 @@
 - `internal/upstream`：`Upstream` 接口（`Chat` + `ChatStream`；Models/Ping 为后续扩展点）+ `OpenAIAdapter`（IR→OpenAI→IR，流式 SSE 逐行解析，单行上限 1MB）。错误统一为 `*upstream.Error{StatusCode,Type,Message,Retryable}`：5xx/网络 `Retryable=true`，429/401 保留状态码供 key 冷却，4xx 透传。
 - `internal/router`：模型→渠道路由（`ListChannelsByModel` 按 name/alias 命中、模型启用、渠道 active、带能力）、全局策略 `routing_strategy`（random/round_robin）、**全局模型重定向** `model_redirects`（请求名→实际名，M5）、5xx/网络错误换渠道重试 1 轮（最多 4 次尝试）、429/401 标记 key 冷却换 key、4xx 直接透传；`Chat` 返回 `*ChatResult{Resp, ChannelID}`、`ChatStream` 返回 `(channelID, error)`（请求日志用）；`ChatStream` 重试只在**首个事件 emit 前**（已输出即中断）；上游不支持 system 时自动折叠 system 进首条 user（`protocol.FoldSystemIntoUser`）；非 openai 类型渠道返回 501（上游适配器留后续）。
 - `internal/api`：三入口 handler（`/v1/chat/completions`、`/v1/responses`、`/v1/messages`）共用 `handle` 流水线（鉴权→入口解析→白名单→router→出口序列化/流式编码）；每请求生成 `X-Request-Id` 并**异步写请求日志**（`logRequest`，失败可丢，符合 §2.6）；流式 SSE 头在**首个事件时**才 WriteHeader 200，之前的路由错误仍返回正常 HTTP 错误；`GET /v1/models`（启用模型对外名列表，alias 非空用 alias、去重）。错误格式：OpenAI/Responses 用 `{error:{message,type}}`，Anthropic 用 `{type:"error",error:{...}}`（类型按状态码映射）。
-- `internal/web` + 根目录 `web/`（embed FS）：登录/仪表盘（含最近请求）/令牌/**渠道**/**模型**/请求日志/测试台/用户管理/导入导出页（渠道页探测中带 meta 5s 自动刷新），Pico.css 内嵌。模板注册了 `add`/`sub` 函数（分页用）。`web.New(st, sessions, chm, router, version)` 依赖 router（测试台用），version 显示在侧栏。
+- `internal/web` + 根目录 `web/`（embed FS）：登录/仪表盘（含最近请求）/令牌/**渠道**/**模型**/请求日志/测试台/用户管理/导入导出页（渠道页探测中带 meta 5s 自动刷新），样式为 **Tailwind CSS Play CDN**（`base.html` 引入脚本，运行时编译，无构建）。模板注册了 `add`/`sub` 函数（分页用）。`web.New(st, sessions, chm, router, version)` 依赖 router（测试台用），version 显示在侧栏。
 - `README.md`：用户文档（快速开始/配置表/客户端接入/常见问题）；`Dockerfile` 多阶段构建（CGO_ENABLED=0 + alpine，HEALTHCHECK 探测 /admin/login）；Makefile 含 `docker-build`/`docker-run`。
 
 ## M2 关键决策
@@ -75,7 +75,7 @@
 ## 已定技术约束（实现时必须遵守，均来自 REQUIREMENTS.md）
 
 - Go 单二进制；路由用 chi；SQLite 用 `modernc.org/sqlite`（纯 Go、无 CGO）。
-- 管理面：`html/template` + **Pico.css**（单 CSS 引入），禁止引入构建工具 / node_modules / 前端框架。
+- 管理面：`html/template` + **Tailwind CSS**（Play CDN `cdn.tailwindcss.com` 运行时编译；自定义样式放 `base.html` 的 `text/tailwindcss` 块用 `@apply`）。禁止引入构建工具 / node_modules / 前端框架；页面需联网才能加载样式，离线环境请换方案。
 - 无计费逻辑（砍掉余额/充值/账单）。令牌白名单为必填项；「允许全部模型」必须显式勾选，默认关。
 - 上游 API key 用 AES-GCM 加密存储（密钥来自环境变量，缺省明文+启动警告）。
 - 对外入口三协议：OpenAI Chat / Responses / Anthropic Messages；内部统一转 IR 再按上游序列化。

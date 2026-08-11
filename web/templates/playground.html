@@ -1,39 +1,46 @@
 {{template "head" .}}
-<div class="layout">
+<div class="flex min-h-screen">
   {{template "sidebar" .}}
-  <main class="main">
-    <h1>测试台</h1>
+  <main class="flex-1 p-8">
+    <h1 class="mb-6 text-2xl font-bold text-slate-900">测试台</h1>
     {{template "flash" .}}
 
     {{if .Error}}
-    <div class="flash" role="alert">{{.Error}}</div>
+    <div class="mb-4 rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700" role="alert">{{.Error}}</div>
     {{end}}
 
-    <article>
-      <form method="post" action="/admin/playground/chat">
-        <label>模型
-          <select name="model">
+    <div class="max-w-3xl rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
+      <form method="post" action="/admin/playground/chat" class="space-y-4">
+        <div>
+          <label for="model" class="mb-1 block text-sm font-medium text-slate-700">模型</label>
+          <select id="model" name="model"
+            class="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200">
             <option value="">请选择模型</option>
             {{range .Models}}
             <option value="{{.Name}}" {{if eq $.Model .Name}}selected{{end}}>{{.Name}}</option>
             {{end}}
           </select>
-        </label>
-        <label>系统提示（可选）
-          <textarea name="system" rows="2" placeholder="你是助手…">{{.System}}</textarea>
-        </label>
-        <label>消息
-          <textarea name="message" rows="4" placeholder="输入你的问题…">{{.Message}}</textarea>
-        </label>
-        <button type="submit">发送</button>
+        </div>
+        <div>
+          <label for="system" class="mb-1 block text-sm font-medium text-slate-700">系统提示（可选）</label>
+          <textarea id="system" name="system" rows="2" placeholder="你是助手…"
+            class="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200">{{.System}}</textarea>
+        </div>
+        <div>
+          <label for="message" class="mb-1 block text-sm font-medium text-slate-700">消息</label>
+          <textarea id="message" name="message" rows="4" placeholder="输入你的问题…"
+            class="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200">{{.Message}}</textarea>
+        </div>
+        <button type="submit"
+          class="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700">发送</button>
       </form>
-    </article>
+    </div>
 
     {{if .Result}}
-    <article>
-      <h3>回复</h3>
-      <div style="white-space: pre-wrap;">{{.Result}}</div>
-    </article>
+    <div class="mt-6 max-w-3xl rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
+      <h2 class="mb-4 text-lg font-semibold text-slate-900">回复</h2>
+      <div class="text-sm whitespace-pre-wrap text-slate-800">{{.Result}}</div>
+    </div>
     {{end}}
   </main>
 </div>

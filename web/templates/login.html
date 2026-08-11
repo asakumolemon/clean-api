@@ -1,15 +1,20 @@
 {{template "head" .}}
-<main class="container" style="max-width: 420px; margin-top: 10vh;">
-  <h1>智能 API 网关 · 登录</h1>
+<main class="mx-auto mt-[10vh] w-full max-w-sm px-4">
+  <h1 class="mb-6 text-center text-2xl font-bold text-slate-900">智能 API 网关 · 登录</h1>
   {{template "flash" .}}
-  <form method="post" action="/admin/login">
-    <label>用户名
-      <input name="username" type="text" autocomplete="username" required>
-    </label>
-    <label>密码
-      <input name="password" type="password" autocomplete="current-password" required>
-    </label>
-    <button type="submit">登录</button>
+  <form method="post" action="/admin/login" class="space-y-4 rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
+    <div>
+      <label for="username" class="mb-1 block text-sm font-medium text-slate-700">用户名</label>
+      <input id="username" name="username" type="text" autocomplete="username" required
+        class="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200">
+    </div>
+    <div>
+      <label for="password" class="mb-1 block text-sm font-medium text-slate-700">密码</label>
+      <input id="password" name="password" type="password" autocomplete="current-password" required
+        class="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200">
+    </div>
+    <button type="submit"
+      class="w-full rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700">登录</button>
   </form>
 </main>
 </body>

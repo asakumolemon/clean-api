@@ -1,43 +1,59 @@
 {{template "head" .}}
-<div class="layout">
+<div class="flex min-h-screen">
   {{template "sidebar" .}}
-  <main class="main">
-    <h1>编辑渠道</h1>
+  <main class="flex-1 p-8">
+    <h1 class="mb-6 text-2xl font-bold text-slate-900">编辑渠道</h1>
     {{template "flash" .}}
 
-    <article>
-      <form method="post" action="/admin/channels/{{.Ch.ID}}/edit" class="form-grid">
-        <label>名称
-          <input name="name" type="text" value="{{.Ch.Name}}">
-        </label>
-        <label>Base URL
-          <input name="base_url" type="url" value="{{.Ch.BaseURL}}">
-        </label>
-        <label>类型
-          <select name="type">
+    <div class="max-w-3xl rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
+      <form method="post" action="/admin/channels/{{.Ch.ID}}/edit" class="grid grid-cols-1 gap-4 items-end md:grid-cols-2">
+        <div>
+          <label for="name" class="mb-1 block text-sm font-medium text-slate-700">名称</label>
+          <input id="name" name="name" type="text" value="{{.Ch.Name}}"
+            class="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200">
+        </div>
+        <div>
+          <label for="base_url" class="mb-1 block text-sm font-medium text-slate-700">Base URL</label>
+          <input id="base_url" name="base_url" type="url" value="{{.Ch.BaseURL}}"
+            class="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200">
+        </div>
+        <div>
+          <label for="type" class="mb-1 block text-sm font-medium text-slate-700">类型</label>
+          <select id="type" name="type"
+            class="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200">
             <option value="auto" {{if eq .Ch.Type "auto"}}selected{{end}}>auto（自动探测）</option>
             <option value="openai" {{if eq .Ch.Type "openai"}}selected{{end}}>openai</option>
             <option value="anthropic" {{if eq .Ch.Type "anthropic"}}selected{{end}}>anthropic</option>
             <option value="responses" {{if eq .Ch.Type "responses"}}selected{{end}}>responses</option>
           </select>
-        </label>
-        <label>权重
-          <input name="weight" type="number" value="{{.Ch.Weight}}" min="1">
-        </label>
-        <label>key 轮换策略
-          <select name="balance_strategy">
+        </div>
+        <div>
+          <label for="weight" class="mb-1 block text-sm font-medium text-slate-700">权重</label>
+          <input id="weight" name="weight" type="number" value="{{.Ch.Weight}}" min="1"
+            class="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200">
+        </div>
+        <div>
+          <label for="balance_strategy" class="mb-1 block text-sm font-medium text-slate-700">key 轮换策略</label>
+          <select id="balance_strategy" name="balance_strategy"
+            class="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200">
             <option value="random" {{if eq .Ch.BalanceStrategy "random"}}selected{{end}}>random（随机）</option>
             <option value="round_robin" {{if eq .Ch.BalanceStrategy "round_robin"}}selected{{end}}>round_robin（顺序）</option>
           </select>
-        </label>
-        <label>新增/替换 API key（每行一个，留空保留现有）
-          <textarea name="api_keys" rows="3" placeholder="sk-xxx"></textarea>
-        </label>
-        <p class="muted" style="grid-column: 1 / -1;">修改类型或 base_url 后会自动重新探测。</p>
-        <button type="submit">保存</button>
-        <a href="/admin/channels" role="button" class="secondary outline">返回</a>
+        </div>
+        <div class="md:col-span-2">
+          <label for="api_keys" class="mb-1 block text-sm font-medium text-slate-700">新增/替换 API key（每行一个，留空保留现有）</label>
+          <textarea id="api_keys" name="api_keys" rows="3" placeholder="sk-xxx"
+            class="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200"></textarea>
+        </div>
+        <p class="text-sm text-slate-500 md:col-span-2">修改类型或 base_url 后会自动重新探测。</p>
+        <div class="flex gap-3 md:col-span-2">
+          <button type="submit"
+            class="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700">保存</button>
+          <a href="/admin/channels"
+            class="rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100">返回</a>
+        </div>
       </form>
-    </article>
+    </div>
   </main>
 </div>
 </body>

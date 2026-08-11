@@ -1,32 +1,36 @@
 {{template "head" .}}
-<div class="layout">
+<div class="flex min-h-screen">
   {{template "sidebar" .}}
-  <main class="main">
-    <h1>导入导出</h1>
+  <main class="flex-1 p-8">
+    <h1 class="mb-6 text-2xl font-bold text-slate-900">导入导出</h1>
     {{template "flash" .}}
 
-    <article>
-      <h3>导出配置</h3>
-      <p class="muted">导出全部渠道（含加密 key）、模型、用户与令牌（仅哈希）为单个 JSON 文件，可用于迁移服务器。</p>
-      <a role="button" href="/admin/export/download">下载配置 JSON</a>
-      <p class="muted" style="margin-top:.5rem">
+    <div class="mb-6 max-w-2xl rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
+      <h2 class="mb-1 text-lg font-semibold text-slate-900">导出配置</h2>
+      <p class="mb-4 text-sm text-slate-500">导出全部渠道（含加密 key）、模型、用户与令牌（仅哈希）为单个 JSON 文件，可用于迁移服务器。</p>
+      <a href="/admin/export/download"
+        class="inline-block rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700">下载配置 JSON</a>
+      <div class="mt-4 rounded-md bg-slate-50 p-4 text-sm text-slate-600">
         注意：<br>
-        1. 渠道 key 为加密密文，迁移到新服务器需配置相同的 <code>GATEWAY_ENC_KEY</code>；<br>
+        1. 渠道 key 为加密密文，迁移到新服务器需配置相同的 <code class="font-mono text-xs">GATEWAY_ENC_KEY</code>；<br>
         2. 令牌只导出哈希，明文不可恢复，迁移后请重新生成令牌。
-      </p>
-    </article>
+      </div>
+    </div>
 
-    <article>
-      <h3>导入配置</h3>
-      <p class="muted">导入为<strong>替换式</strong>：现有渠道/模型/用户/令牌将被整体清空并重建（单事务，失败自动回滚）。</p>
+    <div class="max-w-2xl rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
+      <h2 class="mb-1 text-lg font-semibold text-slate-900">导入配置</h2>
+      <p class="mb-4 text-sm text-slate-500">导入为<strong class="font-medium">替换式</strong>：现有渠道/模型/用户/令牌将被整体清空并重建（单事务，失败自动回滚）。</p>
       <form method="post" action="/admin/import" enctype="multipart/form-data"
-            onsubmit="return confirm('确认导入？现有全部渠道/模型/用户/令牌将被替换。')">
-        <label>配置文件
-          <input type="file" name="file" accept=".json,application/json" required>
-        </label>
-        <button type="submit">导入</button>
+        class="space-y-4" onsubmit="return confirm('确认导入？现有全部渠道/模型/用户/令牌将被替换。')">
+        <div>
+          <label for="file" class="mb-1 block text-sm font-medium text-slate-700">配置文件</label>
+          <input id="file" type="file" name="file" accept=".json,application/json" required
+            class="block w-full text-sm text-slate-700 file:mr-4 file:rounded-md file:border-0 file:bg-blue-600 file:px-4 file:py-2 file:text-sm file:font-medium file:text-white hover:file:bg-blue-700">
+        </div>
+        <button type="submit"
+          class="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700">导入</button>
       </form>
-    </article>
+    </div>
   </main>
 </div>
 </body>

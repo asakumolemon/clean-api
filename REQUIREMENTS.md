@@ -161,7 +161,7 @@ type Upstream interface {
 
 ### 2.5 管理面（服务端渲染，不前后端分离）
 
-技术：`html/template` + **Pico.css**（单 CSS 文件引入，无构建工具、无 node_modules）
+技术：`html/template` + **Tailwind CSS**（Play CDN 运行时编译，无构建工具、无 node_modules）
 
 | 页面 | 路由 | 功能 |
 |---|---|---|

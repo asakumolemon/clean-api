@@ -1,61 +1,77 @@
 {{template "head" .}}
-<div class="layout">
+<div class="flex min-h-screen">
   {{template "sidebar" .}}
-  <main class="main">
-    <h1>令牌管理</h1>
+  <main class="flex-1 p-8">
+    <h1 class="mb-6 text-2xl font-bold text-slate-900">令牌管理</h1>
     {{template "flash" .}}
 
     {{if .NewToken}}
-    <article style="border-color: var(--pico-primary);">
-      <strong>令牌已生成，仅显示一次，请立即保存：</strong>
-      <div class="plaintext-token mono">{{.NewToken}}</div>
-      <small>数据库只保存其 sha256 哈希，关闭本页后无法再次查看。</small>
-    </article>
+    <div class="mb-6 rounded-lg border-2 border-blue-500 bg-white p-6 shadow-sm">
+      <p class="font-semibold text-slate-900">令牌已生成，仅显示一次，请立即保存：</p>
+      <div class="mt-2 mb-2 rounded-md border border-slate-300 bg-slate-50 p-3 font-mono text-sm break-all">{{.NewToken}}</div>
+      <small class="text-sm text-slate-500">数据库只保存其 sha256 哈希，关闭本页后无法再次查看。</small>
+    </div>
     {{end}}
 
-    <article>
-      <h3>新建令牌</h3>
-      <form method="post" action="/admin/tokens">
-        <label>名称
-          <input name="name" type="text" placeholder="例如：我的 NextChat">
-        </label>
-        <label>模型白名单（逗号分隔，至少一个；留空需勾选下方开关）
-          <input name="models" type="text" placeholder="deepseek-chat, gpt-4o">
-        </label>
-        <label>
-          <input name="allow_all" type="checkbox" role="switch">
+    <div class="mb-6 max-w-2xl rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
+      <h2 class="mb-4 text-lg font-semibold text-slate-900">新建令牌</h2>
+      <form method="post" action="/admin/tokens" class="space-y-4">
+        <div>
+          <label for="name" class="mb-1 block text-sm font-medium text-slate-700">名称</label>
+          <input id="name" name="name" type="text" placeholder="例如：我的 NextChat"
+            class="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200">
+        </div>
+        <div>
+          <label for="models" class="mb-1 block text-sm font-medium text-slate-700">模型白名单（逗号分隔，至少一个；留空需勾选下方开关）</label>
+          <input id="models" name="models" type="text" placeholder="deepseek-chat, gpt-4o"
+            class="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200">
+        </div>
+        <label class="flex items-center gap-2 text-sm text-slate-700">
+          <input name="allow_all" type="checkbox" class="h-4 w-4 accent-blue-600">
           允许全部模型（必须显式勾选才生效）
         </label>
-        <button type="submit">生成</button>
+        <button type="submit"
+          class="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700">生成</button>
       </form>
-    </article>
+    </div>
 
-    <table>
-      <thead>
-        <tr><th>ID</th><th>名称</th><th>白名单</th><th>状态</th><th>最近使用</th><th>操作</th></tr>
-      </thead>
-      <tbody>
-        {{range .Tokens}}
-        <tr>
-          <td>{{.ID}}</td>
-          <td>{{.Name}}</td>
-          <td class="mono">{{if .AllowAll}}允许全部{{else}}{{range .ModelWhitelist}}{{.}} {{end}}{{end}}</td>
-          <td>{{if .Enabled}}启用{{else}}禁用{{end}}</td>
-          <td>{{if .LastUsedAt.Valid}}{{.LastUsedAt.Time.Format "2006-01-02 15:04"}}{{else}}-{{end}}</td>
-          <td>
-            <form method="post" action="/admin/tokens/{{.ID}}/toggle" style="display:inline">
-              <button type="submit" class="secondary outline">{{if .Enabled}}禁用{{else}}启用{{end}}</button>
-            </form>
-            <form method="post" action="/admin/tokens/{{.ID}}/revoke" style="display:inline">
-              <button type="submit" class="secondary outline">吊销</button>
-            </form>
-          </td>
-        </tr>
-        {{else}}
-        <tr><td colspan="6">暂无令牌</td></tr>
-        {{end}}
-      </tbody>
-    </table>
+    <div class="overflow-x-auto rounded-lg border border-slate-200 bg-white shadow-sm">
+      <table class="w-full text-sm">
+        <thead>
+          <tr class="border-b border-slate-200 text-left text-xs uppercase text-slate-500">
+            <th class="px-4 py-3 font-medium">ID</th>
+            <th class="px-4 py-3 font-medium">名称</th>
+            <th class="px-4 py-3 font-medium">白名单</th>
+            <th class="px-4 py-3 font-medium">状态</th>
+            <th class="px-4 py-3 font-medium">最近使用</th>
+            <th class="px-4 py-3 font-medium">操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          {{range .Tokens}}
+          <tr class="border-b border-slate-100">
+            <td class="px-4 py-3">{{.ID}}</td>
+            <td class="px-4 py-3">{{.Name}}</td>
+            <td class="px-4 py-3 font-mono text-xs">{{if .AllowAll}}允许全部{{else}}{{range .ModelWhitelist}}{{.}} {{end}}{{end}}</td>
+            <td class="px-4 py-3">{{if .Enabled}}启用{{else}}禁用{{end}}</td>
+            <td class="px-4 py-3">{{if .LastUsedAt.Valid}}{{.LastUsedAt.Time.Format "2006-01-02 15:04"}}{{else}}-{{end}}</td>
+            <td class="px-4 py-3 whitespace-nowrap">
+              <form method="post" action="/admin/tokens/{{.ID}}/toggle" class="mr-1 inline">
+                <button type="submit"
+                  class="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100">{{if .Enabled}}禁用{{else}}启用{{end}}</button>
+              </form>
+              <form method="post" action="/admin/tokens/{{.ID}}/revoke" class="inline">
+                <button type="submit"
+                  class="rounded-md border border-red-200 bg-white px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50">吊销</button>
+              </form>
+            </td>
+          </tr>
+          {{else}}
+          <tr><td colspan="6" class="px-4 py-8 text-center text-slate-500">暂无令牌</td></tr>
+          {{end}}
+        </tbody>
+      </table>
+    </div>
   </main>
 </div>
 </body>

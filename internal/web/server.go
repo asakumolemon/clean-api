@@ -1,9 +1,8 @@
-// Package web 管理面：html/template + Pico.css，服务端渲染。
+// Package web 管理面：html/template + Tailwind（Play CDN），服务端渲染。
 package web
 
 import (
 	"html/template"
-	"io/fs"
 	"net/http"
 	"strings"
 
@@ -47,7 +46,6 @@ func (s *Server) Mount(r chi.Router) {
 		r.Get("/login", s.loginPage)
 		r.Post("/login", s.login)
 		r.Post("/logout", s.logout)
-		r.Handle("/static/*", s.static())
 
 		r.Group(func(r chi.Router) {
 			r.Use(s.adminOnly)
@@ -81,14 +79,6 @@ func (s *Server) Mount(r chi.Router) {
 			r.Post("/import", s.importConfig)
 		})
 	})
-}
-
-func (s *Server) static() http.Handler {
-	sub, err := fs.Sub(webassets.FS, "static")
-	if err != nil {
-		panic(err)
-	}
-	return http.StripPrefix("/admin/static/", http.FileServer(http.FS(sub)))
 }
 
 // render 渲染指定模板。

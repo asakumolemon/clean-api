@@ -8,7 +8,7 @@
 - **三协议入口**：`/v1/chat/completions`（NextChat / LobeChat / 各类 SDK）、`/v1/responses`（新版 OpenAI SDK）、`/v1/messages`（Claude Code / Cursor / Anthropic SDK），流式与非流式均支持，工具调用三协议互转
 - **路由分发**：模型 → 渠道映射（random / round_robin）、多 key 轮换与冷却（429/401 自动切换）、5xx 换渠道重试、渠道健康检查自动绕开故障渠道、全局模型重定向与渠道内模型别名
 - **访问控制**：令牌（Bearer）+ 模型白名单（必须显式指定；「允许全部模型」需显式勾选），无计费
-- **管理面**：服务端渲染（Pico.css，无构建工具）——渠道/模型/令牌/用户管理、请求日志（筛选+分页）、测试台、配置导入导出
+- **管理面**：服务端渲染（Tailwind CSS Play CDN，无构建工具）——渠道/模型/令牌/用户管理、请求日志（筛选+分页）、测试台、配置导入导出
 - **轻量**：Go 单二进制 + SQLite（纯 Go，无 CGO），常驻内存几十 MB；上游 key AES-GCM 加密存储
 
 ## 快速开始
