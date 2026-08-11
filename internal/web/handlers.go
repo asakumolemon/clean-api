@@ -105,9 +105,10 @@ func (s *Server) tokensPage(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	tokens, _ := s.store.ListTokens(ctx)
 	s.render(w, "tokens.html", baseData("令牌管理 · 智能 API 网关", "tokens", map[string]any{
-		"Flash":  s.readFlash(w, r),
-		"Tokens": tokens,
-		"Models": enabledModelNames(ctx, s.store),
+		"Flash":   s.readFlash(w, r),
+		"Tokens":  tokens,
+		"Models":  enabledModelNames(ctx, s.store),
+		"BaseURL": baseURL(r),
 	}))
 }
 
@@ -152,7 +153,19 @@ func (s *Server) createToken(w http.ResponseWriter, r *http.Request) {
 		"Tokens":   tokens,
 		"NewToken": plain,
 		"Models":   enabledModelNames(ctx, s.store),
+		"BaseURL":  baseURL(r),
 	}))
+}
+
+// baseURL 从请求推导网关对外地址：优先取反向代理的 X-Forwarded-Proto，否则按 TLS 判断。
+func baseURL(r *http.Request) string {
+	scheme := "http"
+	if p := r.Header.Get("X-Forwarded-Proto"); p == "https" {
+		scheme = "https"
+	} else if r.TLS != nil {
+		scheme = "https"
+	}
+	return scheme + "://" + r.Host
 }
 
 // enabledModelNames 启用模型的对外名（alias 非空用 alias），去重后排序，供令牌白名单弹窗多选。
