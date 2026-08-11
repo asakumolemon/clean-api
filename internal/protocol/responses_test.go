@@ -76,6 +76,35 @@ func TestParseResponsesStringInput(t *testing.T) {
 	}
 }
 
+// 部分客户端（Cherry Studio 等）省略 input 条目的 type 字段，须按 role/content 等字段推断。
+func TestParseResponsesInputWithoutType(t *testing.T) {
+	body := `{
+		"model": "deepseek-chat",
+		"input": [
+			{"role": "user", "content": [{"type": "input_text", "text": "测试"}]},
+			{"call_id": "call_1", "name": "get_weather", "arguments": "{}"},
+			{"call_id": "call_1", "output": "晴"}
+		],
+		"stream": true
+	}`
+	req, err := ParseResponsesRequest([]byte(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(req.Messages) != 3 {
+		t.Fatalf("消息数应为 3（user+assistant+tool），got %d", len(req.Messages))
+	}
+	if m := req.Messages[0]; m.Role != "user" || m.Content[0].Text != "测试" {
+		t.Error("无 type 的 message 条目应推断为 user:", m)
+	}
+	if m := req.Messages[1]; m.Role != "assistant" || len(m.ToolCalls) != 1 || m.ToolCalls[0].Name != "get_weather" {
+		t.Error("无 type 的 function_call 条目推断错误:", m)
+	}
+	if m := req.Messages[2]; m.Role != "tool" || m.ToolCallID != "call_1" || m.Content[0].Text != "晴" {
+		t.Error("无 type 的 function_call_output 条目推断错误:", m)
+	}
+}
+
 func TestParseResponsesErrors(t *testing.T) {
 	if _, err := ParseResponsesRequest([]byte(`{"input":"hi"}`)); err == nil || !strings.Contains(err.Error(), "model") {
 		t.Error("缺 model 应报错，got", err)

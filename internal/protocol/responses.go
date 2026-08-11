@@ -95,6 +95,16 @@ func parseResponsesInput(raw json.RawMessage) ([]Message, error) {
 	var out []Message
 	for i, item := range items {
 		typ, _ := item["type"].(string)
+		if typ == "" {
+			// type 是可选字段（Cherry Studio 等客户端省略）：按字段推断条目类型
+			if _, hasRole := item["role"]; hasRole {
+				typ = "message"
+			} else if _, hasOutput := item["output"]; hasOutput {
+				typ = "function_call_output"
+			} else if _, hasArgs := item["arguments"]; hasArgs {
+				typ = "function_call"
+			}
+		}
 		switch typ {
 		case "message":
 			role, _ := item["role"].(string)
