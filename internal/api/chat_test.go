@@ -112,7 +112,7 @@ func TestChatAuthChain(t *testing.T) {
 	}
 
 	// 白名单内模型 → 通过鉴权，进入路由层（无渠道 → 404 model not found）
-	if rec := doChat(t, srv, am, st, plain, `{"model":"deepseek-chat"}`); rec.Code != http.StatusNotFound {
+	if rec := doChat(t, srv, am, st, plain, `{"model":"deepseek-chat","messages":[{"role":"user","content":"hi"}]}`); rec.Code != http.StatusNotFound {
 		t.Error("白名单内无渠道应 404，got", rec.Code)
 	}
 
@@ -266,6 +266,42 @@ func TestChatStreamModelNotFound(t *testing.T) {
 	rec := doChat(t, srv, am, st, plain, `{"model":"deepseek-chat","stream":true,"messages":[{"role":"user","content":"hi"}]}`)
 	if rec.Code != http.StatusNotFound {
 		t.Error("无渠道流式请求应 404，got", rec.Code)
+	}
+}
+
+// 流式成功也要落请求日志（此前流式成功完全不写日志）；用量取自 done 事件。
+func TestChatStreamSuccessLogged(t *testing.T) {
+	srv, st, am := newTestSrv(t)
+	ctx := context.Background()
+	sse := `data: {"choices":[{"index":0,"delta":{"content":"好"},"finish_reason":null}]}
+data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":1,"total_tokens":3}}
+data: [DONE]
+`
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, sse)
+	}))
+	t.Cleanup(upstream.Close)
+
+	uid, _ := st.CreateUser(ctx, "admin", "hash", "admin")
+	plain := "test-token-abc"
+	_, _ = st.CreateToken(ctx, uid, "t", auth.HashToken(plain), []string{"deepseek-chat"}, true)
+	chID := addTestChannelReturnID(t, st, upstream.URL)
+
+	rec := doChat(t, srv, am, st, plain, `{"model":"deepseek-chat","stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("应 200，got %d: %s", rec.Code, rec.Body.String())
+	}
+	logs := waitLogs(t, st, 1)
+	l := logs[0]
+	if l.Status != http.StatusOK || l.ChannelID != chID {
+		t.Errorf("流式成功日志应记录 200 与渠道 %d: %+v", chID, l)
+	}
+	if l.PromptTokens != 2 || l.CompletionTokens != 1 {
+		t.Errorf("流式成功日志应记录 done 事件用量: %+v", l)
+	}
+	if l.Error != "" {
+		t.Errorf("成功日志不应有错误信息: %+v", l)
 	}
 }
 
@@ -499,6 +535,78 @@ func TestMessagesMissingMaxTokens(t *testing.T) {
 	}
 }
 
+// Anthropic 入口带 tool_choice:{"type":"auto"}（对象式）→ 上游应收到旧版字符串 "auto"，
+// 而不是新版 {"type":"auto"}（OpencodeGo/Console Go 等上游只认旧格式，直接 400）。
+func TestMessagesToolChoiceAutoNormalized(t *testing.T) {
+	srv, st, am := newTestSrv(t)
+	upstream, lastBody := upstreamCapture(t, func(got string) (int, string) {
+		return 200, chatResp("查好了", "")
+	})
+	plain := newUserToken(t, st, "deepseek-chat")
+	addTestChannel(t, st, upstream.URL)
+
+	body := `{
+		"model": "deepseek-chat",
+		"max_tokens": 1024,
+		"tool_choice": {"type": "auto"},
+		"messages": [{"role": "user", "content": "你好"}]
+	}`
+	rec := doV1(t, srv.Messages, am, st, plain, http.MethodPost, "/v1/messages", body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("应 200，got %d: %s", rec.Code, rec.Body.String())
+	}
+	sent := lastBody.Load().(string)
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(sent), &parsed); err != nil {
+		t.Fatal(err)
+	}
+	tc, ok := parsed["tool_choice"].(string)
+	if !ok || tc != "auto" {
+		t.Errorf("tool_choice 应归一化为字符串 auto，got %v（body %s）", parsed["tool_choice"], sent)
+	}
+}
+
+// 空对话拦截：messages 为空在入口直接 400，不透传 "messages":[] 给上游。
+func TestMessagesEmptyInputRejected(t *testing.T) {
+	srv, st, am := newTestSrv(t)
+	plain := newUserToken(t, st, "deepseek-chat")
+
+	body := `{"model":"deepseek-chat","max_tokens":100,"messages":[]}`
+	rec := doV1(t, srv.Messages, am, st, plain, http.MethodPost, "/v1/messages", body)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("空 messages 应 400，got %d", rec.Code)
+	}
+	var out map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out["type"] != "error" {
+		t.Error("Anthropic 错误应带 type=error:", rec.Body.String())
+	}
+	errObj := out["error"].(map[string]any)
+	if errObj["type"] != "invalid_request" {
+		t.Errorf("错误类型应为 invalid_request（与入口解析错误一致），got %v", errObj["type"])
+	}
+}
+
+// Responses 入口 input 为空数组 → 入口直接 400（上游同样会拒 "messages":[]）。
+func TestResponsesEmptyInputRejected(t *testing.T) {
+	srv, st, am := newTestSrv(t)
+	plain := newUserToken(t, st, "deepseek-chat")
+
+	rec := doV1(t, srv.Responses, am, st, plain, http.MethodPost, "/v1/responses", `{"model":"deepseek-chat","input":[]}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("空 input 应 400，got %d", rec.Code)
+	}
+	var out map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := out["error"]; !ok {
+		t.Error("Responses 错误应带 error 对象:", rec.Body.String())
+	}
+}
+
 // --- Responses 入口 ---
 
 // Responses 非流式：instructions/function_call_output → 上游 OpenAI 格式；出口为 Responses 格式。
@@ -595,7 +703,7 @@ func TestMessagesWhitelist(t *testing.T) {
 	plain := "test-token-abc"
 	_, _ = st.CreateToken(context.Background(), uid, "t", auth.HashToken(plain), []string{"deepseek-chat"}, false)
 
-	rec := doV1(t, srv.Messages, am, st, plain, http.MethodPost, "/v1/messages", `{"model":"gpt-4o","max_tokens":10,"messages":[]}`)
+	rec := doV1(t, srv.Messages, am, st, plain, http.MethodPost, "/v1/messages", `{"model":"gpt-4o","max_tokens":10,"messages":[{"role":"user","content":"hi"}]}`)
 	if rec.Code != http.StatusForbidden {
 		t.Error("白名单外应 403，got", rec.Code)
 	}

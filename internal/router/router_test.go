@@ -537,3 +537,33 @@ func TestChatResultChannelID(t *testing.T) {
 		t.Errorf("流式 ChannelID 应为 %d，got %d", chID, got)
 	}
 }
+
+// 失败请求也要携带最后尝试的渠道 ID（请求日志用，之前错误路径一律返回 0）。
+func TestChatErrorCarriesChannelID(t *testing.T) {
+	st, rt := newTestEnv(t, "random")
+	// 4xx 透传 + 5xx 重试耗尽两类错误路径
+	badMock := newCountedServer(t, func(n int64, w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = io.WriteString(w, `{"error":{"message":"参数错误","type":"invalid_request_error"}}`)
+	})
+	chID := addChannel(t, st, "渠道", "openai", badMock.srv.URL, []string{"sk-1"}, map[string]store.Capabilities{"m": {}})
+
+	// 非流式 4xx：返回的 ChatResult 应带渠道 ID
+	res, err := rt.Chat(context.Background(), "m", chatReq("m"))
+	var uperr *upstream.Error
+	if !errors.As(err, &uperr) || uperr.StatusCode != http.StatusBadRequest {
+		t.Fatalf("应透传 4xx，got %v", err)
+	}
+	if res == nil || res.ChannelID != chID {
+		t.Errorf("4xx 错误也应携带渠道 ID %d，got %+v", chID, res)
+	}
+
+	// 流式 4xx：错误返回应带渠道 ID
+	got, err := rt.ChatStream(context.Background(), "m", chatReq("m"), func(ev protocol.StreamEvent) error { return nil })
+	if !errors.As(err, &uperr) || uperr.StatusCode != http.StatusBadRequest {
+		t.Fatalf("流式应透传 4xx，got %v", err)
+	}
+	if got != chID {
+		t.Errorf("流式 4xx 也应携带渠道 ID %d，got %d", chID, got)
+	}
+}

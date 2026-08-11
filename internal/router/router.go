@@ -94,7 +94,7 @@ func (r *Router) Chat(ctx context.Context, model string, req *protocol.ChatReque
 				break keyLoop
 			}
 			if route.ChannelType != "" && route.ChannelType != "openai" {
-				return nil, unsupportedTypeError(route.ChannelType)
+				return &ChatResult{ChannelID: lastChannelID}, unsupportedTypeError(route.ChannelType)
 			}
 			ir := r.prepareReq(req, route)
 			resp, err := upstream.NewOpenAI(route.BaseURL, key, r.client).Chat(ctx, &ir)
@@ -104,7 +104,7 @@ func (r *Router) Chat(ctx context.Context, model string, req *protocol.ChatReque
 			lastErr = err
 			var uperr *upstream.Error
 			if !errors.As(err, &uperr) {
-				return nil, err // 本地异常（key 解密失败等）直接返回
+				return &ChatResult{ChannelID: lastChannelID}, err // 本地异常（key 解密失败等）直接返回
 			}
 			switch {
 			case uperr.StatusCode == http.StatusTooManyRequests || uperr.StatusCode == http.StatusUnauthorized:
@@ -112,11 +112,11 @@ func (r *Router) Chat(ctx context.Context, model string, req *protocol.ChatReque
 			case uperr.Retryable:
 				break keyLoop // 5xx/网络错误：换渠道（下一轮）
 			default:
-				return nil, err // 4xx 不重试，直接透传
+				return &ChatResult{ChannelID: lastChannelID}, err // 4xx 不重试，直接透传
 			}
 		}
 	}
-	return nil, lastErr
+	return &ChatResult{ChannelID: lastChannelID}, lastErr
 }
 
 // ChatStream 分发一次流式对话：语义与 Chat 相同，唯一差异——
@@ -124,15 +124,15 @@ func (r *Router) Chat(ctx context.Context, model string, req *protocol.ChatReque
 // 避免客户端收到重复/错乱数据。返回最终渠道 ID（请求日志用，失败时为最后尝试渠道）。
 func (r *Router) ChatStream(ctx context.Context, model string, req *protocol.ChatRequest, emit func(protocol.StreamEvent) error) (int64, error) {
 	model = r.applyRedirect(model)
+	var lastChannelID int64
 	routes, seq, maxAttempts, err := r.resolveRoutes(ctx, model)
 	if err != nil {
-		return 0, err
+		return lastChannelID, err
 	}
 
 	attempts := 0
 	emitted := false
 	var lastErr error = ErrModelNotFound
-	var lastChannelID int64
 	emitWrapped := func(ev protocol.StreamEvent) error {
 		emitted = true
 		return emit(ev)
@@ -154,7 +154,7 @@ func (r *Router) ChatStream(ctx context.Context, model string, req *protocol.Cha
 				break keyLoop
 			}
 			if route.ChannelType != "" && route.ChannelType != "openai" {
-				return 0, unsupportedTypeError(route.ChannelType)
+				return lastChannelID, unsupportedTypeError(route.ChannelType)
 			}
 			ir := r.prepareReq(req, route)
 			err = upstream.NewOpenAI(route.BaseURL, key, r.client).ChatStream(ctx, &ir, emitWrapped)
@@ -164,10 +164,10 @@ func (r *Router) ChatStream(ctx context.Context, model string, req *protocol.Cha
 			lastErr = err
 			var uperr *upstream.Error
 			if !errors.As(err, &uperr) {
-				return 0, err // 本地异常直接返回
+				return lastChannelID, err // 本地异常直接返回
 			}
 			if emitted {
-				return 0, err // 已开始输出：中断，不重试
+				return lastChannelID, err // 已开始输出：中断，不重试
 			}
 			switch {
 			case uperr.StatusCode == http.StatusTooManyRequests || uperr.StatusCode == http.StatusUnauthorized:
@@ -175,11 +175,11 @@ func (r *Router) ChatStream(ctx context.Context, model string, req *protocol.Cha
 			case uperr.Retryable:
 				break keyLoop // 5xx/网络错误：换渠道
 			default:
-				return 0, err // 4xx 直接透传
+				return lastChannelID, err // 4xx 直接透传
 			}
 		}
 	}
-	return 0, lastErr
+	return lastChannelID, lastErr
 }
 
 // resolveRoutes 查可用路由并给出渠道尝试序列（两轮轮换顺序）与总尝试上限。

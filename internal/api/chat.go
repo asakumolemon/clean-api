@@ -82,6 +82,13 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request, entry entryProto
 		s.writeEntryError(w, entry, http.StatusForbidden, "model_not_allowed", "model not allowed")
 		return
 	}
+	// 空对话拦截：白名单校验之后再查，避免把鉴权语义让位给校验错误。
+	// 空 messages 的上游会 400（Empty input messages），且空对话本身无法补全，
+	// 入口直接给出各协议格式的 400 更清晰。
+	if len(req.Messages) == 0 {
+		s.writeEntryError(w, entry, http.StatusBadRequest, "invalid_request", "请求消息为空（messages/input 不能为空）")
+		return
+	}
 
 	if !req.Stream {
 		s.handleNonStream(w, r, entry, req, requestID, start)
@@ -105,7 +112,11 @@ func parseEntry(entry entryProtocol, body []byte) (*protocol.ChatRequest, error)
 func (s *Server) handleNonStream(w http.ResponseWriter, r *http.Request, entry entryProtocol, req *protocol.ChatRequest, requestID string, start time.Time) {
 	res, err := s.router.Chat(r.Context(), req.Model, req)
 	if err != nil {
-		s.logRequest(r, req.Model, 0, start, requestID, errorStatus(err), err.Error(), 0, 0)
+		chID := int64(0)
+		if res != nil {
+			chID = res.ChannelID // 错误时也携带实际尝试渠道（请求日志用）
+		}
+		s.logRequest(r, req.Model, chID, start, requestID, errorStatus(err), err.Error(), 0, 0)
 		s.writeRouteError(w, entry, err, req.Model)
 		return
 	}
@@ -138,10 +149,14 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request, entry entr
 
 	writer := newStreamWriter(entry, w, req.Model)
 	started := false
+	var usage *protocol.Usage
 	chID, err := s.router.ChatStream(r.Context(), req.Model, req, func(ev protocol.StreamEvent) error {
 		if !started {
 			started = true
 			w.WriteHeader(http.StatusOK)
+		}
+		if ev.Type == protocol.EventDone && ev.Usage != nil {
+			usage = ev.Usage // 缓存 done 事件的用量，成功日志用
 		}
 		return writer.WriteEvent(ev)
 	})
@@ -149,14 +164,21 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request, entry entr
 		if !started {
 			// 路由层错误（模型不存在/上游 4xx 等）：HTTP 头未发，可写正常 JSON 错误
 			status := errorStatus(err)
-			s.logRequest(r, req.Model, 0, start, requestID, status, err.Error(), 0, 0)
+			s.logRequest(r, req.Model, chID, start, requestID, status, err.Error(), 0, 0)
 			s.writeRouteError(w, entry, err, req.Model)
 			return
 		}
 		_ = writer.WriteError(err) // 流中错误：协议 error 事件
 		s.logRequest(r, req.Model, chID, start, requestID, 0, err.Error(), 0, 0)
+		return
 	}
 	_ = writer.Finish() // 收尾（未收到 done 时补发结束事件，防客户端挂起）
+	// 流式成功补请求日志（REQUIREMENTS §2.6 每请求记录；用量取自 done 事件）
+	pt, ct := 0, 0
+	if usage != nil {
+		pt, ct = usage.PromptTokens, usage.CompletionTokens
+	}
+	s.logRequest(r, req.Model, chID, start, requestID, http.StatusOK, "", pt, ct)
 }
 
 // logRequest 异步写请求日志（失败忽略，不影响主流程，符合 REQUIREMENTS §2.6）。

@@ -208,7 +208,7 @@ func SerializeOpenAIChatRequest(req *ChatRequest) ([]byte, error) {
 		Stream:         req.Stream,
 		Temperature:    req.Temperature,
 		MaxTokens:      req.MaxTokens,
-		ToolChoice:     req.ToolChoice,
+		ToolChoice:     normalizeToolChoice(req.ToolChoice),
 		ResponseFormat: req.ResponseFormat,
 		Messages:       []messageOut{},
 	}
@@ -228,6 +228,52 @@ func SerializeOpenAIChatRequest(req *ChatRequest) ([]byte, error) {
 		out.Tools = append(out.Tools, tool)
 	}
 	return json.Marshal(out)
+}
+
+// normalizeToolChoice 把各入口透传的 tool_choice 归一化为 OpenAI Chat 上游兼容格式。
+// 上游（如 OpenCodeGo/Console Go）只认旧版两种形态：裸字符串 "auto"/"none"/"required"，或
+// {"type":"function","function":{...}}；新版 {"type":"auto"} 变体与 Anthropic 的 {"type":"tool"}
+// 会直接 400（unknown variant）。规则：
+//   - string / nil：原样（nil 由 omitempty 省略）
+//   - {"type":"auto"} / {"type":"any"} → "auto"
+//   - {"type":"none"} → "none"；{"type":"required"} → "required"
+//   - {"type":"tool","name":X}（Anthropic）与 {"type":"function","name":X}（Responses）→
+//     {"type":"function","function":{"name":X}}
+//   - {"type":"function","function":{...}}（已是旧版对象）→ 原样
+func normalizeToolChoice(tc any) any {
+	switch v := tc.(type) {
+	case map[string]any:
+		typ, _ := v["type"].(string)
+		switch typ {
+		case "auto", "any":
+			return "auto"
+		case "none":
+			return "none"
+		case "required":
+			return "required"
+		case "tool":
+			// Anthropic 格式：{"type":"tool","name":X} → OpenAI 旧版函数对象
+			name, _ := v["name"].(string)
+			if name == "" {
+				return nil
+			}
+			return map[string]any{"type": "function", "function": map[string]any{"name": name}}
+		case "function":
+			// 已是旧版对象 {"type":"function","function":{...}} → 原样；
+			// Responses 的 {"type":"function","name":X} → 补 function 包裹
+			if _, ok := v["function"]; ok {
+				return v
+			}
+			name, _ := v["name"].(string)
+			if name == "" {
+				return nil
+			}
+			return map[string]any{"type": "function", "function": map[string]any{"name": name}}
+		}
+		return v // 其他对象（如自定义 tool_choice）原样透传
+	default:
+		return tc
+	}
 }
 
 func messageOutToOpenAI(m Message) messageOut {

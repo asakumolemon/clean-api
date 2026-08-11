@@ -151,6 +151,59 @@ func TestSerializeOpenAIChatRequestOmitEmpty(t *testing.T) {
 	}
 }
 
+func TestSerializeOpenAIChatRequestNormalizesToolChoice(t *testing.T) {
+	cases := []struct {
+		name  string
+		input any
+		want  string // 期望 tool_choice 字段的 JSON 值（空串 = 字段应被省略）
+	}{
+		{"string_auto", "auto", `"auto"`},
+		{"string_none", "none", `"none"`},
+		{"nil", nil, ""},
+		// Anthropic 入口：对象式 {"type":"auto"} 必须归一化为字符串（上游不认新版变体）
+		{"anthropic_auto", map[string]any{"type": "auto"}, `"auto"`},
+		{"anthropic_any", map[string]any{"type": "any"}, `"auto"`},
+		{"anthropic_none", map[string]any{"type": "none"}, `"none"`},
+		{"anthropic_required", map[string]any{"type": "required"}, `"required"`},
+		{"anthropic_tool", map[string]any{"type": "tool", "name": "get_weather"}, `{"function":{"name":"get_weather"},"type":"function"}`},
+		// Responses 入口：{"type":"function","name":X} 补 function 包裹
+		{"responses_function_name", map[string]any{"type": "function", "name": "get_weather"}, `{"function":{"name":"get_weather"},"type":"function"}`},
+		// 已是旧版对象：原样透传
+		{"legacy_function", map[string]any{"type": "function", "function": map[string]any{"name": "get_weather"}}, `{"function":{"name":"get_weather"},"type":"function"}`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			req := &ChatRequest{Model: "m", ToolChoice: c.input,
+				Messages: []Message{{Role: "user", Content: []ContentPart{{Type: "text", Text: "hi"}}}}}
+			out, err := SerializeOpenAIChatRequest(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var raw map[string]any
+			if err := json.Unmarshal(out, &raw); err != nil {
+				t.Fatal(err)
+			}
+			got, has := raw["tool_choice"]
+			if c.want == "" {
+				if has {
+					t.Errorf("tool_choice 应为省略，got %v", got)
+				}
+				return
+			}
+			if !has {
+				t.Fatalf("tool_choice 缺失，want %s，body %s", c.want, out)
+			}
+			gotJSON, err := json.Marshal(got)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(gotJSON) != c.want {
+				t.Errorf("tool_choice 归一化错误：got %s，want %s", gotJSON, c.want)
+			}
+		})
+	}
+}
+
 // --- 响应解析与序列化 ---
 
 func TestParseAndSerializeOpenAIChatResponse(t *testing.T) {
