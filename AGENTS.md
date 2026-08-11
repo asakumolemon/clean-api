@@ -14,7 +14,7 @@
 - `cmd/server/main.go`：入口，加载配置、建库、首启建管理员、建 crypto/channel/router 管理器、挂路由；`recoverMW` panic 恢复中间件（500 JSON + 堆栈日志）；`-version` flag（`-ldflags "-X main.version=..."` 注入）；启动时检测「库中有加密 key 但未配 GATEWAY_ENC_KEY」并告警。
 - `internal/config`：`config.json` + `GATEWAY_*` 环境变量覆盖；`session_secure`（明文 HTTP 必须为 false）。
 - `internal/store`：`database/sql` + `modernc.org/sqlite`，users/tokens/channels/channel_keys/models/request_logs 的 CRUD 已齐。M5 新增：`logs.go`（日志 CRUD/筛选/分页/清理，`LogFilter{Model,Token,Status,UserID}`）、`export.go`（`ExportAll`/`ImportAll` 全量导出与替换式导入，独立 DTO 字段小写）、users 扩展（改角色/重置密码/删除级联删令牌）。
-- `internal/auth`：bcrypt、token 生成(32B Base64)/sha256、session（Secure 属性可配）、`APIAuth` 中间件、`CheckModelAllowed`。
+- `internal/auth`：bcrypt、token 生成(32B Base64)/sha256、session（Secure 属性可配）、`APIAuth` 中间件（兼容 `Authorization: Bearer` 与 Anthropic 系客户端的 `x-api-key` 两种令牌头）、`CheckModelAllowed`。
 - `internal/crypto`：上游 API key 的 AES-GCM 加解密，无 `GATEWAY_ENC_KEY` 时明文降级；密文带 `enc:` 前缀。
 - `internal/channel`：协议自动识别（GET /v1/models→openai、POST /v1/messages→anthropic、POST /v1/responses→responses；**探测失败时错误信息带各协议证据**：状态码/网络错误+响应体截断，M6）、模型列表同步、**能力标注（默认不探测**：`probe_capabilities` 配置或渠道页「探测能力」按钮开启；默认写入保守值 system/tools 开、vision/json_mode 关，模型管理页可手动调整——避免免费模型配额被 100 次探测打爆）、多 key 轮换（random/round_robin）+ 冷却（时长可配 `SetCooldown`，默认 60s）、异步探测进度（内存态，管理页轮询，`ProbeStatus`，`StartCapabilitiesProbe`/`ProbeCapabilitiesOnly` 供手动触发）。M5 新增 `health.go`：`HealthChecker` 定时巡检 active/down 渠道（经 Manager 取真实 key 发最小请求，避免假 key 401 误判），连续失败 N 次→down、成功 1 次→恢复 active。
 - `internal/protocol`：IR 定义（`ChatRequest`/`Message`/`ChatResponse`/`StreamEvent` 等，按 REQUIREMENTS §2.3.2）+ 三协议解析/序列化/流式翻译：

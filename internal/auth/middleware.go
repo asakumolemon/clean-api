@@ -45,20 +45,22 @@ func CheckModelAllowed(t *store.Token, model string) bool {
 	return false
 }
 
-// APIAuth 对外 /v1 接口的 Bearer 令牌鉴权中间件。
-// 流程：Bearer → 查哈希 → 存在且启用 → 放行并注入上下文；否则 401。
+// APIAuth 对外 /v1 接口的令牌鉴权中间件。
+// 兼容两种取令牌方式：OpenAI 系客户端的 Authorization: Bearer，
+// 以及 Anthropic 系客户端（Claude Code / Cherry Studio 等）的 x-api-key 头。
+// 流程：取令牌 → 查哈希 → 存在且启用 → 放行并注入上下文；否则 401。
 // 模型白名单校验在具体 handler 内做（需要解析请求体里的 model）。
 func (m *SessionManager) APIAuth(s *store.Store) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			hdr := r.Header.Get("Authorization")
-			if !strings.HasPrefix(hdr, "Bearer ") {
-				WriteAPIError(w, http.StatusUnauthorized, "unauthorized", "缺少 Bearer 令牌")
-				return
+			raw := ""
+			if hdr := r.Header.Get("Authorization"); strings.HasPrefix(hdr, "Bearer ") {
+				raw = strings.TrimPrefix(hdr, "Bearer ")
+			} else {
+				raw = r.Header.Get("X-Api-Key")
 			}
-			raw := strings.TrimPrefix(hdr, "Bearer ")
 			if raw == "" {
-				WriteAPIError(w, http.StatusUnauthorized, "unauthorized", "令牌为空")
+				WriteAPIError(w, http.StatusUnauthorized, "unauthorized", "缺少 Bearer 令牌或 x-api-key")
 				return
 			}
 			tok, err := s.GetTokenByHash(r.Context(), HashToken(raw))

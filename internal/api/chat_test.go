@@ -131,6 +131,40 @@ func TestChatAuthChain(t *testing.T) {
 	_ = srv
 }
 
+// Anthropic 系客户端（Claude Code / Cherry Studio）用 x-api-key 头鉴权，须与 Bearer 等效。
+func TestChatAuthXAPIKey(t *testing.T) {
+	srv, st, am := newTestSrv(t)
+	ctx := context.Background()
+
+	uid, _ := st.CreateUser(ctx, "admin", "hash", "admin")
+	plain := "test-token-abc"
+	_, _ = st.CreateToken(ctx, uid, "t", auth.HashToken(plain), []string{"deepseek-chat"}, false)
+
+	do := func(header string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"deepseek-chat","max_tokens":100,"messages":[{"role":"user","content":"hi"}]}`))
+		if header != "" {
+			req.Header.Set("X-Api-Key", header)
+		}
+		h := am.APIAuth(st)(http.HandlerFunc(srv.ChatCompletions))
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec
+	}
+
+	// x-api-key 携带有效令牌 → 通过鉴权（无渠道 → 404 说明已进路由层）
+	if rec := do(plain); rec.Code != http.StatusNotFound {
+		t.Fatal("x-api-key 有效令牌应通过鉴权（404），got", rec.Code, rec.Body.String())
+	}
+	// x-api-key 为空 → 401
+	if rec := do(""); rec.Code != http.StatusUnauthorized {
+		t.Fatal("空 x-api-key 应 401，got", rec.Code)
+	}
+	// x-api-key 无效 → 401
+	if rec := do("wrong-token"); rec.Code != http.StatusUnauthorized {
+		t.Fatal("无效 x-api-key 应 401，got", rec.Code)
+	}
+}
+
 // 完整闭环：令牌 → 白名单 → 路由 → 上游 → OpenAI 响应。
 func TestChatCompletionsFullFlow(t *testing.T) {
 	srv, st, am := newTestSrv(t)
