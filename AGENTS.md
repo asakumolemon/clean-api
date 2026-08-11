@@ -3,6 +3,7 @@
 ## 项目状态
 
 - **全部里程碑 M1–M6 已完成**：M1 骨架 → M2 渠道+探测 → M3 协议转换·非流式 → M4 流式+全入口 → M5 管理面完善 → M6 打磨（panic 恢复、探测证据、key 冷却可配、密钥缺失告警、版本信息、Dockerfile、README、依赖整理）。里程碑计划见 `REQUIREMENTS.md` 第 5 节。
+- **M6 后有未入里程碑的修复**（见「M6 后修复决策」）：tool_choice 归一化（下游用 Responses/Anthropic 协议接旧版 OpenAI 兼容上游时的兼容适配）、空对话拦截、失败/流式成功请求日志渠道 ID 与落库补齐。
 - 仓库名 `clean-api`，但 Go module 名是 `api-gateway`（对应 REQUIREMENTS 里的项目根目录名）。
 - `REQUIREMENTS.md`（中文）是唯一且权威的需求/设计文档：含目录结构、SQLite 数据模型、IR 设计、里程碑 M1–M6 等。改动需求前先看它。
 - `prototype.html` 是管理后台的**静态原型**（Pico.css + 前端 JS 切页）。它只是设计参考，**不是生产模板**：正式方案是服务端渲染 `html/template`，不前后端分离、无构建工具（见 REQUIREMENTS 2.5）。不要照搬原型里的 SPA 式 `data-page` 切页写法。
@@ -16,14 +17,21 @@
 - `internal/crypto`：上游 API key 的 AES-GCM 加解密，无 `GATEWAY_ENC_KEY` 时明文降级；密文带 `enc:` 前缀。
 - `internal/channel`：协议自动识别（GET /v1/models→openai、POST /v1/messages→anthropic、POST /v1/responses→responses；**探测失败时错误信息带各协议证据**：状态码/网络错误+响应体截断，M6）、模型列表同步、**能力标注（默认不探测**：`probe_capabilities` 配置或渠道页「探测能力」按钮开启；默认写入保守值 system/tools 开、vision/json_mode 关，模型管理页可手动调整——避免免费模型配额被 100 次探测打爆）、多 key 轮换（random/round_robin）+ 冷却（时长可配 `SetCooldown`，默认 60s）、异步探测进度（内存态，管理页轮询，`ProbeStatus`，`StartCapabilitiesProbe`/`ProbeCapabilitiesOnly` 供手动触发）。M5 新增 `health.go`：`HealthChecker` 定时巡检 active/down 渠道（经 Manager 取真实 key 发最小请求，避免假 key 401 误判），连续失败 N 次→down、成功 1 次→恢复 active。
 - `internal/protocol`：IR 定义（`ChatRequest`/`Message`/`ChatResponse`/`StreamEvent` 等，按 REQUIREMENTS §2.3.2）+ 三协议解析/序列化/流式翻译：
-  - `openai.go`：Chat 入口解析与出口序列化 + `OpenAIStreamParser`（上游流解析，tool_calls 按 index 累积）+ `OpenAIChatStreamWriter`（出口流编码，`[DONE]` 收尾）；
+  - `openai.go`：Chat 入口解析与出口序列化 + `OpenAIStreamParser`（上游流解析，tool_calls 按 index 累积）+ `OpenAIChatStreamWriter`（出口流编码，`[DONE]` 收尾）；**`normalizeToolChoice`（序列化层 tool_choice 归一化，M6 后修复）**：把各入口透传的新版对象式 tool_choice 转为 OpenAI 旧版兼容格式（`{"type":"auto"}`→`"auto"`、Anthropic `{"type":"tool","name":X}`→`{"type":"function","function":{"name":X}}`），解决只认旧格式的上游（OpencodeGo/Console Go 等）400 unknown variant；
   - `anthropic.go`：Messages 入口解析（system 多形态/tool_use/tool_result/image）与出口序列化（tool_use 块、stop_reason 映射）+ `AnthropicStreamWriter`（message_start/content_block_start/delta/stop/message_delta/message_stop 状态机）；
   - `responses.go`：Responses 入口解析（instructions/input 条目）与出口序列化（output 条目）+ `ResponsesStreamWriter`（output_text.delta/function_call_arguments.delta/response.completed，无 `[DONE]`）。
 - `internal/upstream`：`Upstream` 接口（`Chat` + `ChatStream`；Models/Ping 为后续扩展点）+ `OpenAIAdapter`（IR→OpenAI→IR，流式 SSE 逐行解析，单行上限 1MB）。错误统一为 `*upstream.Error{StatusCode,Type,Message,Retryable}`：5xx/网络 `Retryable=true`，429/401 保留状态码供 key 冷却，4xx 透传。
-- `internal/router`：模型→渠道路由（`ListChannelsByModel` 按 name/alias 命中、模型启用、渠道 active、带能力）、全局策略 `routing_strategy`（random/round_robin）、**全局模型重定向** `model_redirects`（请求名→实际名，M5）、5xx/网络错误换渠道重试 1 轮（最多 4 次尝试）、429/401 标记 key 冷却换 key、4xx 直接透传；`Chat` 返回 `*ChatResult{Resp, ChannelID}`、`ChatStream` 返回 `(channelID, error)`（请求日志用）；`ChatStream` 重试只在**首个事件 emit 前**（已输出即中断）；上游不支持 system 时自动折叠 system 进首条 user（`protocol.FoldSystemIntoUser`）；非 openai 类型渠道返回 501（上游适配器留后续）。
-- `internal/api`：三入口 handler（`/v1/chat/completions`、`/v1/responses`、`/v1/messages`）共用 `handle` 流水线（鉴权→入口解析→白名单→router→出口序列化/流式编码）；每请求生成 `X-Request-Id` 并**异步写请求日志**（`logRequest`，失败可丢，符合 §2.6）；流式 SSE 头在**首个事件时**才 WriteHeader 200，之前的路由错误仍返回正常 HTTP 错误；`GET /v1/models`（启用模型对外名列表，alias 非空用 alias、去重）。错误格式：OpenAI/Responses 用 `{error:{message,type}}`，Anthropic 用 `{type:"error",error:{...}}`（类型按状态码映射）。
+- `internal/router`：模型→渠道路由（`ListChannelsByModel` 按 name/alias 命中、模型启用、渠道 active、带能力）、全局策略 `routing_strategy`（random/round_robin）、**全局模型重定向** `model_redirects`（请求名→实际名，M5）、5xx/网络错误换渠道重试 1 轮（最多 4 次尝试）、429/401 标记 key 冷却换 key、4xx 直接透传；`Chat` 返回 `*ChatResult{Resp, ChannelID}`、`ChatStream` 返回 `(channelID, error)`（请求日志用）；**错误路径也携带最后尝试渠道 ID（M6 后修复，此前一律返回 0/nil 导致失败日志 channel_id=0）**；`ChatStream` 重试只在**首个事件 emit 前**（已输出即中断）；上游不支持 system 时自动折叠 system 进首条 user（`protocol.FoldSystemIntoUser`）；非 openai 类型渠道返回 501（上游适配器留后续）。
+- `internal/api`：三入口 handler（`/v1/chat/completions`、`/v1/responses`、`/v1/messages`）共用 `handle` 流水线（鉴权→入口解析→白名单→**空对话拦截**→router→出口序列化/流式编码；空对话拦截在**白名单之后**：`len(req.Messages)==0` 直接 400，不透传 `"messages":[]` 给上游，M6 后修复）；每请求生成 `X-Request-Id` 并**异步写请求日志**（`logRequest`，失败可丢，符合 §2.6；**流式成功路径也会落库**，M6 后修复此前完全不打日志）；流式 SSE 头在**首个事件时**才 WriteHeader 200，之前的路由错误仍返回正常 HTTP 错误；`GET /v1/models`（启用模型对外名列表，alias 非空用 alias、去重）。错误格式：OpenAI/Responses 用 `{error:{message,type}}`，Anthropic 用 `{type:"error",error:{...}}`（类型按状态码映射）。
 - `internal/web` + 根目录 `web/`（embed FS）：登录/仪表盘（含最近请求）/令牌/**渠道**/**模型**/请求日志/测试台/用户管理/导入导出页（渠道页探测中带 meta 5s 自动刷新），样式为 **Tailwind CSS Play CDN**（`base.html` 引入脚本，运行时编译，无构建）。模板注册了 `add`/`sub` 函数（分页用）。`web.New(st, sessions, chm, router, version)` 依赖 router（测试台用），version 显示在侧栏。
 - `README.md`：用户文档（快速开始/配置表/客户端接入/常见问题）；`Dockerfile` 多阶段构建（CGO_ENABLED=0 + alpine，HEALTHCHECK 探测 /admin/login）；Makefile 含 `docker-build`/`docker-run`。
+
+## M6 后修复决策（上游兼容 + 日志）
+
+- **tool_choice 归一化放序列化层**（`protocol.normalizeToolChoice`，`SerializeOpenAIChatRequest` 内调用）而非 router `prepareReq`：它是「上游格式」问题，放序列化层是三入口（OpenAI/Responses/Anthropic）+ 流式/非流式的唯一咽喉，OpenAI 入口用新版对象式 SDK 也一并受益。触发场景：下游用 Responses/Anthropic 协议接旧版 OpenAI Chat 兼容上游（OpencodeGo/Console Go 等），Anthropic 客户端发的 `{"type":"auto"}` 透传后上游 400 `unknown variant "auto"`。
+- **空对话拦截在白名单之后**（`handle` 流水线，非解析器内）：避免把鉴权语义让位给校验错误（白名单外模型仍先 403）；空 messages/input 无法补全，入口直接 400 比透传 `"messages":[]` 给上游收到难懂的 400 更清晰。
+- **失败请求也要记渠道**：`Chat` 错误时返回 `&ChatResult{ChannelID: lastChannelID}`（不返回 nil）、`ChatStream` 错误返回 `lastChannelID`；api 层错误日志用返回值而非硬编码 0。此前失败日志 channel_id 全为 0（成功路径一直正确）。
+- **流式成功也写请求日志**：`handleStream` 在 `Finish()` 后补成功日志，用量取自 done 事件（emit 回调里缓存 `ev.Usage`）。此前流式成功完全不打日志，违反 §2.6 每请求记录。
 
 ## M2 关键决策
 
@@ -84,5 +92,5 @@
 ## 验证命令
 
 - 已有 `Makefile`：`make build` / `make test` / `make run` / `make vet` / `make fmt`（Windows 无 make 时用 `go build ./...`、`go test ./...`、`go vet ./...`、`gofmt -w .`；`fmt` 会直接改写文件）。
-- 关键逻辑已有单测：auth/store/crypto/channel（协议探测用 httptest 模拟上游）+ protocol（三协议解析/序列化往返、流解析/流编码事件序列）+ upstream（错误分类、流式多 chunk/工具调用）+ router（key 冷却换 key、5xx 换渠道、4xx 透传、alias 路由、round_robin 轮换、流式 emit 前重试/emit 后不重试、system 折叠）+ api 三入口集成（OpenAI/Anthropic/Responses 流式与非流式、错误格式）+ web 集成测试（登录→添加渠道→自动探测→模型落库）。
+- 关键逻辑已有单测：auth/store/crypto/channel（协议探测用 httptest 模拟上游）+ protocol（三协议解析/序列化往返、流解析/流编码事件序列、**tool_choice 归一化各形态**）+ upstream（错误分类、流式多 chunk/工具调用）+ router（key 冷却换 key、5xx 换渠道、4xx 透传、alias 路由、round_robin 轮换、流式 emit 前重试/emit 后不重试、system 折叠、**错误路径携带渠道 ID**）+ api 三入口集成（OpenAI/Anthropic/Responses 流式与非流式、错误格式、**Anthropic tool_choice 归一化端到端、空 messages/空 input 400、流式成功日志**）+ web 集成测试（登录→添加渠道→自动探测→模型落库）。
 - 注意：本机 `GOPROXY` 已切到 `https://goproxy.cn,direct`（默认 proxy 直连超时）；`go mod tidy` / `go get` 新增依赖时保持该代理。
