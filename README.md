@@ -4,7 +4,7 @@
 
 ## 特性
 
-- **智能接入**：添加渠道只需填 `base_url + api_key`，自动识别协议（OpenAI / Anthropic / Responses）、自动同步模型列表、自动探测能力（system / 工具调用 / 视觉 / JSON mode），结果可手动覆盖
+- **智能接入**：添加渠道只需填 `base_url + api_key`，自动识别协议（OpenAI / Anthropic / Responses）、自动同步模型列表、自动探测能力（system / 工具调用 / 视觉 / JSON mode），结果可手动覆盖；**上游支持 OpenAI Chat 兼容与 Anthropic Messages 兼容两类**（Responses 原生上游暂不支持）
 - **三协议入口**：`/v1/chat/completions`（NextChat / LobeChat / 各类 SDK）、`/v1/responses`（新版 OpenAI SDK）、`/v1/messages`（Claude Code / Cursor / Anthropic SDK），流式与非流式均支持，工具调用三协议互转
 - **路由分发**：模型 → 渠道映射（random / round_robin）、多 key 轮换与冷却（429/401 自动切换）、5xx 换渠道重试、渠道健康检查自动绕开故障渠道、全局模型重定向与渠道内模型别名
 - **访问控制**：令牌（Bearer）+ 模型白名单（必须显式指定；「允许全部模型」需显式勾选），无计费
@@ -118,6 +118,7 @@ make docker-build
 ## 常见问题
 
 - **探测失败**：渠道页显示各协议探测证据（状态码 + 响应摘要）。常见原因：`base_url` 少了 `https://`、上游需要代理（当前版本不内置代理）、API key 无效、上游非标准协议（可手动指定类型）。
+- **Anthropic 上游模型列表为空**：Anthropic 原生 API 通常不提供 `GET /v1/models`，模型需在渠道页手动添加（添加渠道时同步到的模型可能为空）。
 - **明文 HTTP 下管理面登录不生效**：`session_secure` 必须保持 `false`（仅 HTTPS 部署时开）。
 - **换了 `GATEWAY_ENC_KEY`**：库中已加密的渠道 key 将全部无法解密（启动时有明确告警），需重新添加渠道 key。
 - **令牌明文丢了**：令牌只存哈希，无法找回；删掉重新生成。
