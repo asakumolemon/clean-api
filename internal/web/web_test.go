@@ -334,6 +334,66 @@ func TestUsersPage(t *testing.T) {
 	}
 }
 
+func TestTokenCreateWithModelPicker(t *testing.T) {
+	up := fakeUpstream(t)
+	defer up.Close()
+	ts, st, client := newTestWeb(t, up)
+	ctx := context.Background()
+
+	// 建渠道并同步模型，供白名单弹窗选择
+	chID, err := st.CreateChannel(ctx, "测试渠道", "openai", up.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = st.AddChannelKey(ctx, chID, "sk-test")
+	if _, err := st.SyncModels(ctx, chID, map[string]store.Capabilities{
+		"model-a": {}, "model-b": {},
+	}, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+
+	// 令牌页应渲染弹窗候选（模型 checkbox）
+	page, err := client.Get(ts.URL + "/admin/tokens")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := make([]byte, 1<<20)
+	n, _ := page.Body.Read(body)
+	page.Body.Close()
+	html := string(body[:n])
+	if page.StatusCode != http.StatusOK || !strings.Contains(html, "models-modal") {
+		t.Fatalf("令牌页应包含多选弹窗，got %d", page.StatusCode)
+	}
+	for _, m := range []string{"model-a", "model-b"} {
+		if !strings.Contains(html, `name="models" value="`+m+`"`) {
+			t.Errorf("弹窗应包含模型 %s 的 checkbox", m)
+		}
+	}
+
+	// 多值提交 models（模拟弹窗勾选两个模型）
+	resp, err := client.PostForm(ts.URL+"/admin/tokens", url.Values{
+		"name":   {"multi"},
+		"models": {"model-a", "model-b"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body = make([]byte, 2<<20)
+	n, _ = resp.Body.Read(body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body[:n]), "multi") {
+		t.Fatalf("创建后应渲染新令牌名，got %d", resp.StatusCode)
+	}
+
+	toks, _ := st.ListTokens(ctx)
+	if len(toks) != 1 || len(toks[0].ModelWhitelist) != 2 {
+		t.Fatalf("应创建 1 个含 2 个白名单模型的令牌，got %d 个", len(toks))
+	}
+	if toks[0].ModelWhitelist[0] != "model-a" || toks[0].ModelWhitelist[1] != "model-b" {
+		t.Error("白名单应为 model-a/model-b", toks[0].ModelWhitelist)
+	}
+}
+
 func itoa64(id int64) string {
 	return strconv.FormatInt(id, 10)
 }

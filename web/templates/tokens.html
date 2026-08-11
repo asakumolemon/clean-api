@@ -22,16 +22,45 @@
             class="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200">
         </div>
         <div>
-          <label for="models" class="mb-1 block text-sm font-medium text-slate-700">模型白名单（逗号分隔，至少一个；留空需勾选下方开关）</label>
-          <input id="models" name="models" type="text" placeholder="deepseek-chat, gpt-4o"
-            class="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200">
+          <label class="mb-1 block text-sm font-medium text-slate-700">模型白名单（弹窗多选，至少一个；留空需勾选下方开关）</label>
+          <div class="flex items-center gap-3">
+            <button type="button" id="pick-models"
+              class="rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100 {{if eq (len .Models) 0}}cursor-not-allowed opacity-50{{end}}">选择模型</button>
+            {{if eq (len .Models) 0}}
+            <span class="text-sm text-slate-500">暂无可用模型，请先到「渠道管理」添加渠道并等待探测完成</span>
+            {{end}}
+          </div>
+          <div id="model-chips" class="mt-2 flex flex-wrap gap-2"></div>
         </div>
         <label class="flex items-center gap-2 text-sm text-slate-700">
-          <input name="allow_all" type="checkbox" class="h-4 w-4 accent-blue-600">
+          <input id="allow_all" name="allow_all" type="checkbox" class="h-4 w-4 accent-blue-600">
           允许全部模型（必须显式勾选才生效）
         </label>
         <button type="submit"
           class="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700">生成</button>
+
+        <!-- 模型白名单多选弹窗：checkboxes 在表单内，随表单一并提交 -->
+        <div id="models-modal" class="fixed inset-0 z-50 hidden items-center justify-center bg-slate-900/50">
+          <div class="w-full max-w-md rounded-lg bg-white p-6 shadow-xl">
+            <h3 class="mb-4 text-lg font-semibold text-slate-900">选择模型白名单</h3>
+            <div class="max-h-80 space-y-1 overflow-y-auto pr-1">
+              {{range .Models}}
+              <label class="flex cursor-pointer items-center gap-2 rounded-md px-3 py-2 text-sm text-slate-700 hover:bg-slate-50">
+                <input type="checkbox" name="models" value="{{.}}" class="model-checkbox h-4 w-4 accent-blue-600">
+                <span class="font-mono text-xs">{{.}}</span>
+              </label>
+              {{else}}
+              <p class="px-3 py-2 text-sm text-slate-500">暂无可用模型</p>
+              {{end}}
+            </div>
+            <div class="mt-5 flex justify-end gap-3">
+              <button type="button" id="modal-cancel"
+                class="rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100">取消</button>
+              <button type="button" id="modal-ok"
+                class="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700">确定</button>
+            </div>
+          </div>
+        </div>
       </form>
     </div>
 
@@ -74,5 +103,40 @@
     </div>
   </main>
 </div>
+
+<script>
+(function () {
+  const modal = document.getElementById('models-modal');
+  const btn = document.getElementById('pick-models');
+  const chips = document.getElementById('model-chips');
+  const allowAll = document.getElementById('allow_all');
+
+  function selected() {
+    return Array.from(document.querySelectorAll('.model-checkbox:checked')).map(function (c) { return c.value; });
+  }
+  function renderChips() {
+    chips.innerHTML = '';
+    selected().forEach(function (v) {
+      const s = document.createElement('span');
+      s.className = 'rounded bg-blue-100 px-2 py-1 font-mono text-xs text-blue-700';
+      s.textContent = v;
+      chips.appendChild(s);
+    });
+    if (allowAll.checked) {
+      const s = document.createElement('span');
+      s.className = 'rounded bg-slate-100 px-2 py-1 text-xs text-slate-500';
+      s.textContent = '允许全部模型（白名单忽略）';
+      chips.appendChild(s);
+    }
+  }
+  function open() { modal.classList.remove('hidden'); modal.classList.add('flex'); }
+  function close() { modal.classList.add('hidden'); modal.classList.remove('flex'); }
+  if (btn) btn.addEventListener('click', open);
+  document.getElementById('modal-cancel').addEventListener('click', close);
+  document.getElementById('modal-ok').addEventListener('click', function () { renderChips(); close(); });
+  allowAll.addEventListener('change', renderChips);
+  renderChips();
+})();
+</script>
 </body>
 </html>

@@ -35,18 +35,20 @@
           <textarea id="api_keys" name="api_keys" rows="3" placeholder="sk-xxx"
             class="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200"></textarea>
         </div>
-        <div>
-          <label for="weight" class="mb-1 block text-sm font-medium text-slate-700">权重</label>
-          <input id="weight" name="weight" type="number" value="1" min="1"
-            class="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200">
-        </div>
-        <div>
-          <label for="balance_strategy" class="mb-1 block text-sm font-medium text-slate-700">key 轮换策略</label>
-          <select id="balance_strategy" name="balance_strategy"
-            class="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200">
-            <option value="random">random（随机）</option>
-            <option value="round_robin">round_robin（顺序）</option>
-          </select>
+        <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 md:col-span-2 xl:col-span-3">
+          <div>
+            <label for="weight" class="mb-1 block text-sm font-medium text-slate-700">权重</label>
+            <input id="weight" name="weight" type="number" value="1" min="1"
+              class="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200">
+          </div>
+          <div>
+            <label for="balance_strategy" class="mb-1 block text-sm font-medium text-slate-700">key 轮换策略</label>
+            <select id="balance_strategy" name="balance_strategy"
+              class="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200">
+              <option value="random">random（随机）</option>
+              <option value="round_robin">round_robin（顺序）</option>
+            </select>
+          </div>
         </div>
         <button type="submit"
           class="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 md:col-span-2 xl:col-span-3">添加并探测</button>

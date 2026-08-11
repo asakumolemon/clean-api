@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"net/http"
+	"sort"
 	"strconv"
 
 	"github.com/go-chi/chi/v5"
@@ -106,14 +107,20 @@ func (s *Server) tokensPage(w http.ResponseWriter, r *http.Request) {
 	s.render(w, "tokens.html", baseData("令牌管理 · 智能 API 网关", "tokens", map[string]any{
 		"Flash":  s.readFlash(w, r),
 		"Tokens": tokens,
+		"Models": enabledModelNames(ctx, s.store),
 	}))
 }
 
 // createToken POST /admin/tokens
 func (s *Server) createToken(w http.ResponseWriter, r *http.Request) {
 	name := r.FormValue("name")
-	models := splitModels(r.FormValue("models"))
 	allowAll := r.FormValue("allow_all") == "on"
+
+	// 白名单：弹窗多选提交多个 models 值；兼容旧的逗号分隔单字段。
+	var models []string
+	for _, v := range r.Form["models"] {
+		models = append(models, splitModels(v)...)
+	}
 
 	if name == "" {
 		s.setFlash(w, r, "请填写令牌名称")
@@ -144,7 +151,34 @@ func (s *Server) createToken(w http.ResponseWriter, r *http.Request) {
 	s.render(w, "tokens.html", baseData("令牌管理 · 智能 API 网关", "tokens", map[string]any{
 		"Tokens":   tokens,
 		"NewToken": plain,
+		"Models":   enabledModelNames(ctx, s.store),
 	}))
+}
+
+// enabledModelNames 启用模型的对外名（alias 非空用 alias），去重后排序，供令牌白名单弹窗多选。
+func enabledModelNames(ctx context.Context, st *store.Store) []string {
+	models, err := st.ListModels(ctx)
+	if err != nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, m := range models {
+		if !m.Enabled {
+			continue
+		}
+		name := m.Name
+		if m.Alias != "" {
+			name = m.Alias
+		}
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // toggleToken POST /admin/tokens/{id}/toggle
