@@ -228,6 +228,86 @@ func TestLogsPage(t *testing.T) {
 	}
 }
 
+// 日志页内嵌的按天×模型 token 统计：汇总卡片与明细表随筛选（含日期范围）渲染。
+func TestLogsPageStats(t *testing.T) {
+	up := fakeUpstream(t)
+	defer up.Close()
+	ts, st, client := newTestWeb(t, up)
+	ctx := context.Background()
+
+	day1 := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
+	day2 := time.Date(2026, 8, 11, 9, 30, 0, 0, time.UTC)
+	// 8-10：model-a × 2（pt 100/200、ct 50/80）
+	for i, pt := range []int{100, 200} {
+		_ = st.InsertRequestLog(ctx, &store.RequestLog{
+			TS: day1, RequestID: "stat-a", Model: "model-a", Status: 200,
+			PromptTokens: pt, CompletionTokens: 50 + 30*i,
+		})
+	}
+	// 8-10：model-b × 1
+	_ = st.InsertRequestLog(ctx, &store.RequestLog{
+		TS: day1, RequestID: "stat-b", Model: "model-b", Status: 200,
+		PromptTokens: 1000, CompletionTokens: 500,
+	})
+	// 8-11：model-a × 1（范围外，用于验证日期筛选）
+	_ = st.InsertRequestLog(ctx, &store.RequestLog{
+		TS: day2, RequestID: "stat-outside", Model: "model-a", Status: 200,
+		PromptTokens: 999, CompletionTokens: 999,
+	})
+
+	get := func(qs string) string {
+		t.Helper()
+		page, err := client.Get(ts.URL + "/admin/logs" + qs)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer page.Body.Close()
+		if page.StatusCode != http.StatusOK {
+			t.Fatalf("日志页应 200，got %d", page.StatusCode)
+		}
+		body := make([]byte, 2<<20)
+		n, _ := page.Body.Read(body)
+		return string(body[:n])
+	}
+
+	// 全量：卡片合计应含全部记录；明细表出现两天两模型
+	html := get("")
+	for _, s := range []string{"Token 消耗统计", "model-a", "model-b", "输入 Tokens", "输出 Tokens"} {
+		if !strings.Contains(html, s) {
+			t.Errorf("统计区应包含 %q", s)
+		}
+	}
+	if !strings.Contains(html, "2026-08-10") || !strings.Contains(html, "2026-08-11") {
+		t.Error("统计表应包含 8-10 与 8-11 两天的分组")
+	}
+
+	// 日期筛选 8-10~8-11 含当天；表单回填
+	html = get("?from=2026-08-10&to=2026-08-11")
+	for _, s := range []string{`name="from" value="2026-08-10"`, `name="to" value="2026-08-11"`} {
+		if !strings.Contains(html, s) {
+			t.Errorf("日期筛选应回填 %q", s)
+		}
+	}
+	// 8-10: model-a 合计 pt=300 ct=130；model-b pt=1000 ct=500；总 Tokens = 1930
+	if !strings.Contains(html, "stat-outside") {
+		t.Error("to 含 to 当天，8-11 日志应仍显示")
+	}
+	// 汇总卡片：8-10+8-11 全量 pt=2299（300+1000+999）ct=1629（130+500+999），总 Tokens = 3928
+	if !strings.Contains(html, "3928") {
+		t.Error("汇总卡片应显示总 Tokens 3928")
+	}
+
+	// 日期筛选 8-10 单天：排除 8-11，stat-outside 不再显示
+	html = get("?from=2026-08-10&to=2026-08-10")
+	if strings.Contains(html, "stat-outside") {
+		t.Error("8-10 单天范围不应包含 8-11 日志")
+	}
+	// 单天 model-a 明细行 pt=300 ct=130 总 430
+	if !strings.Contains(html, "430") {
+		t.Error("8-10 model-a 总 Tokens 应为 430")
+	}
+}
+
 func TestPlayground(t *testing.T) {
 	up := fakeUpstream(t)
 	defer up.Close()

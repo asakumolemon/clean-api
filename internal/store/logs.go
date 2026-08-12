@@ -28,6 +28,18 @@ type LogFilter struct {
 	Token  string // 按令牌名精确匹配（空=全部）
 	Status string // all | 2xx | 4xx | 5xx
 	UserID int64  // 0=全部用户
+	From   *time.Time // 起（含，UTC）；空=不限
+	To     *time.Time // 止（排他，UTC，To 当日 24:00）；空=不限
+}
+
+// UsageRow 按天×模型分组的用量统计行（Day 为 UTC 日期 YYYY-MM-DD）。
+type UsageRow struct {
+	Day              string
+	Model            string
+	Requests         int
+	PromptTokens     int64
+	CompletionTokens int64
+	TotalTokens      int64 // PromptTokens + CompletionTokens
 }
 
 // InsertRequestLog 写一条请求日志（调用方负责异步与错误忽略）。
@@ -100,6 +112,14 @@ func logFilterWhere(f LogFilter) (string, []any) {
 		conds = append(conds, "user_id = ?")
 		args = append(args, f.UserID)
 	}
+	if f.From != nil {
+		conds = append(conds, "ts >= ?")
+		args = append(args, *f.From)
+	}
+	if f.To != nil {
+		conds = append(conds, "ts < ?")
+		args = append(args, *f.To)
+	}
 	if len(conds) == 0 {
 		return "", nil
 	}
@@ -108,6 +128,33 @@ func logFilterWhere(f LogFilter) (string, []any) {
 		where += " AND " + c
 	}
 	return where, args
+}
+
+// LogUsageStats 按天×模型统计请求数与 token 用量（日期按 UTC，即 ts 文本前缀 YYYY-MM-DD）。
+// 说明：modernc 驱动默认把 time.Time 以 Go t.String() 文本写入（如 "2026-08-10 12:00:00 +0000 UTC"），
+// SQLite 的 date()/strftime() 无法解析该格式（返回 NULL），故取文本前 10 位作为日期，与写入格式一致。
+func (s *Store) LogUsageStats(ctx context.Context, f LogFilter) ([]UsageRow, error) {
+	where, args := logFilterWhere(f)
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT COALESCE(substr(ts, 1, 10), '') AS day, COALESCE(model,''), COUNT(*),
+		       COALESCE(SUM(prompt_tokens),0), COALESCE(SUM(completion_tokens),0)
+		FROM request_logs`+where+`
+		GROUP BY substr(ts, 1, 10), model
+		ORDER BY day DESC, COUNT(*) DESC, model`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	stats := []UsageRow{}
+	for rows.Next() {
+		var u UsageRow
+		if err := rows.Scan(&u.Day, &u.Model, &u.Requests, &u.PromptTokens, &u.CompletionTokens); err != nil {
+			return nil, err
+		}
+		u.TotalTokens = u.PromptTokens + u.CompletionTokens
+		stats = append(stats, u)
+	}
+	return stats, rows.Err()
 }
 
 // DeleteRequestLogsBefore 删除保留期之前的日志（保留策略清理用）。

@@ -72,6 +72,67 @@ func TestRequestLogsCRUDAndFilter(t *testing.T) {
 	}
 }
 
+// LogUsageStats 按天×模型聚合请求数与 token 用量；时间筛选从/到边界正确。
+func TestLogUsageStats(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	// 用固定日期而非 Now，保证 date(ts) 分组可预测。
+	day1 := time.Date(2026, 8, 9, 10, 0, 0, 0, time.UTC)
+	day2 := time.Date(2026, 8, 10, 23, 59, 0, 0, time.UTC)
+	day3 := time.Date(2026, 8, 11, 0, 0, 0, 0, time.UTC)
+
+	insertLogs(t, s, 3, "deepseek-chat", 200, day1) // 3 次，pt 0,1,2 / ct 0,2,4
+	insertLogs(t, s, 2, "gpt-4o", 200, day1)        // 2 次
+	insertLogs(t, s, 2, "deepseek-chat", 404, day2) // 同模型跨天，应与 day1 分开分组
+	insertLogs(t, s, 1, "gpt-4o", 200, day3)        // 次日 00:00
+
+	// 1) 全量：按 day×model 分组与合计
+	stats, err := s.LogUsageStats(ctx, LogFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string][3]int64{ // day|model → {requests, prompt, completion}
+		"2026-08-09|deepseek-chat": {3, 0 + 1 + 2, 0 + 2 + 4},
+		"2026-08-09|gpt-4o":        {2, 0 + 1, 0 + 2},
+		"2026-08-10|deepseek-chat": {2, 0 + 1, 0 + 2},
+		"2026-08-11|gpt-4o":        {1, 0, 0},
+	}
+	if len(stats) != len(want) {
+		t.Fatalf("分组行数应为 %d，got %d: %+v", len(want), len(stats), stats)
+	}
+	got := map[string][3]int64{}
+	for _, u := range stats {
+		got[u.Day+"|"+u.Model] = [3]int64{int64(u.Requests), u.PromptTokens, u.CompletionTokens}
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("%s 应为 %v，got %v", k, v, got[k])
+		}
+	}
+
+	// 2) 时间范围：from 排除更早日期、to 含 to 当天（To 为排他值，传 to 次日零点）
+	from := time.Date(2026, 8, 10, 0, 0, 0, 0, time.UTC)
+	to := time.Date(2026, 8, 11, 0, 0, 0, 0, time.UTC) // 排他：ts < 8-11 零点 ⇒ 含 8-10 整天
+	stats, err = s.LogUsageStats(ctx, LogFilter{From: &from, To: &to})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stats) != 1 || stats[0].Day != "2026-08-10" || stats[0].Model != "deepseek-chat" || stats[0].Requests != 2 {
+		t.Fatalf("8-10 范围应只剩 deepseek-chat 2 次，got %+v", stats)
+	}
+
+	// 3) 组合现有筛选仍生效：deepseek+2xx+from(8-09 零点起) → 只剩 8-09 的 3 次（8-10 的 deepseek 是 404 被滤掉）
+	from = time.Date(2026, 8, 9, 0, 0, 0, 0, time.UTC)
+	stats, err = s.LogUsageStats(ctx, LogFilter{Model: "deepseek", Status: "2xx", From: &from})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stats) != 1 || stats[0].Day != "2026-08-09" || stats[0].Requests != 3 {
+		t.Fatalf("deepseek+2xx+from 应只余 8-09 的 3 次，got %+v", stats)
+	}
+}
+
 func TestRequestLogsCleanup(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()

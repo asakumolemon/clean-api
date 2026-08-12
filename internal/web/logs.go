@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"api-gateway/internal/store"
 )
@@ -27,6 +28,20 @@ func (s *Server) logsPage(w http.ResponseWriter, r *http.Request) {
 		Token:  strings.TrimSpace(r.URL.Query().Get("token")),
 		Status: r.URL.Query().Get("status"),
 	}
+	// 起止日期（YYYY-MM-DD）：from 为当日零点（含），to 为次日零点（排他，含 to 当天）。
+	fromStr := strings.TrimSpace(r.URL.Query().Get("from"))
+	toStr := strings.TrimSpace(r.URL.Query().Get("to"))
+	if fromStr != "" {
+		if t, err := time.Parse("2006-01-02", fromStr); err == nil {
+			f.From = &t
+		}
+	}
+	if toStr != "" {
+		if t, err := time.Parse("2006-01-02", toStr); err == nil {
+			end := t.Add(24 * time.Hour)
+			f.To = &end
+		}
+	}
 	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
 	if page < 1 {
 		page = 1
@@ -39,6 +54,15 @@ func (s *Server) logsPage(w http.ResponseWriter, r *http.Request) {
 	}
 	if page > totalPages {
 		page = totalPages
+	}
+
+	// 按天×模型用量统计（与列表共用同一筛选，含时间范围）。
+	stats, _ := s.store.LogUsageStats(ctx, f)
+	var sumReq, sumPrompt, sumCompletion int64
+	for _, st := range stats {
+		sumReq += int64(st.Requests)
+		sumPrompt += st.PromptTokens
+		sumCompletion += st.CompletionTokens
 	}
 
 	// 令牌名与渠道名映射
@@ -68,13 +92,20 @@ func (s *Server) logsPage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.render(w, "logs.html", baseData("请求日志 · 智能 API 网关", "logs", map[string]any{
-		"Flash":     s.readFlash(w, r),
-		"Logs":      views,
-		"Filter":    f,
-		"Tokens":    allTokenNames,
-		"Page":      page,
-		"TotalPages": totalPages,
-		"Total":     total,
+		"Flash":          s.readFlash(w, r),
+		"Logs":           views,
+		"Filter":         f,
+		"Tokens":         allTokenNames,
+		"Page":           page,
+		"TotalPages":     totalPages,
+		"Total":          total,
+		"From":           fromStr,
+		"To":             toStr,
+		"Stats":          stats,
+		"StatsRequests":  sumReq,
+		"StatsPrompt":    sumPrompt,
+		"StatsCompletion": sumCompletion,
+		"StatsTotal":     sumPrompt + sumCompletion,
 	}))
 }
 
