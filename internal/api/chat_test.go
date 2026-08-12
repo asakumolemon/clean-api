@@ -881,6 +881,77 @@ func TestModelsList(t *testing.T) {
 	}
 }
 
+// GET /v1/models 按令牌白名单过滤：只返回该令牌可用的模型（对外名匹配，含 alias）。
+func TestModelsListTokenFiltered(t *testing.T) {
+	srv, st, am := newTestSrv(t)
+	ctx := context.Background()
+
+	uid, _ := st.CreateUser(ctx, "admin", "hash", "admin")
+	chID, err := st.CreateChannel(ctx, "渠道", "openai", "https://example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.SyncModels(ctx, chID, map[string]store.Capabilities{"deepseek-chat": {}, "ds-coder": {}}, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	models, _ := st.ListModelsByChannel(ctx, chID)
+	if err := st.SetModelAlias(ctx, models[1].ID, "ds-coder-pro"); err != nil { // ds-coder → 别名对外名
+		t.Fatal(err)
+	}
+
+	// listIDs 列出该令牌下 GET /v1/models 返回的模型 id。
+	listIDs := func(plain string) []string {
+		t.Helper()
+		rec := doV1(t, srv.Models, am, st, plain, http.MethodGet, "/v1/models", "")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("应 200，got %d: %s", rec.Code, rec.Body.String())
+		}
+		var resp struct {
+			Data []struct {
+				ID string `json:"id"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatal(err)
+		}
+		ids := make([]string, 0, len(resp.Data))
+		for _, m := range resp.Data {
+			ids = append(ids, m.ID)
+		}
+		return ids
+	}
+
+	newTok := func(name string, wl []string, allowAll bool) string {
+		t.Helper()
+		plain := "tok-" + name
+		if _, err := st.CreateToken(ctx, uid, name, auth.HashToken(plain), wl, allowAll); err != nil {
+			t.Fatal(err)
+		}
+		return plain
+	}
+	assertIDs := func(plain string, want ...string) {
+		t.Helper()
+		got := listIDs(plain)
+		if len(got) != len(want) {
+			t.Fatalf("模型列表应为 %v，got %v", want, got)
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Fatalf("模型列表应为 %v，got %v", want, got)
+			}
+		}
+	}
+
+	// 白名单命中内部名
+	assertIDs(newTok("wl-internal", []string{"deepseek-chat"}, false), "deepseek-chat")
+	// 白名单命中 alias 对外名（列表与调用时的校验语义一致）
+	assertIDs(newTok("wl-alias", []string{"ds-coder-pro"}, false), "ds-coder-pro")
+	// 白名单无匹配 → 空列表
+	assertIDs(newTok("wl-none", []string{"no-such-model"}, false))
+	// 允许全部模型 → 全部启用模型（与现有 TestModelsList 语义一致）
+	assertIDs(newTok("allow-all", nil, true), "deepseek-chat", "ds-coder-pro")
+}
+
 // --- M5：请求日志与 request_id ---
 
 // waitLogs 轮询等待异步日志落库（最多 2s）。

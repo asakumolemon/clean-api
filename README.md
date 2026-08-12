@@ -95,7 +95,7 @@ curl http://127.0.0.1:8080/v1/chat/completions \
 - `POST /v1/chat/completions` — OpenAI Chat（`stream` 参数控制流式）
 - `POST /v1/messages` — Anthropic Messages（请求需带 `max_tokens`；`x-api-key` 头或 `Authorization: Bearer` 均可鉴权）
 - `POST /v1/responses` — OpenAI Responses
-- `GET /v1/models` — 启用模型的对外名列表（OpenAI 格式）
+- `GET /v1/models` — 启用模型的对外名列表（OpenAI 格式），**按令牌白名单过滤**，只返回当前令牌可用的模型
 
 错误响应：OpenAI/Responses 用 `{"error": {"message", "type"}}`，Anthropic 用 `{"type": "error", "error": {...}}`，状态码贴近上游原意。每个响应带 `X-Request-Id`，可在请求日志页排查。
 

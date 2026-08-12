@@ -331,8 +331,14 @@ func anthropicErrorType(status int) string {
 	return "invalid_request_error"
 }
 
-// Models GET /v1/models：返回启用模型的对外名列表（alias 非空用 alias），按名去重。
+// Models GET /v1/models：返回启用模型的对外名列表（alias 非空用 alias），按名去重，
+// 并按当前令牌白名单过滤——只返回该令牌可用的模型，供客户端模型选择器使用。
 func (s *Server) Models(w http.ResponseWriter, r *http.Request) {
+	tok := auth.TokenFromContext(r.Context())
+	if tok == nil {
+		auth.WriteAPIError(w, http.StatusUnauthorized, "unauthorized", "缺少鉴权上下文")
+		return
+	}
 	models, err := s.store.ListModels(r.Context())
 	if err != nil {
 		auth.WriteAPIError(w, http.StatusInternalServerError, "internal_error", "查询模型失败: "+err.Error())
@@ -347,6 +353,9 @@ func (s *Server) Models(w http.ResponseWriter, r *http.Request) {
 		name := m.Name
 		if m.Alias != "" {
 			name = m.Alias
+		}
+		if !auth.CheckModelAllowed(tok, name) {
+			continue
 		}
 		if seen[name] {
 			continue
