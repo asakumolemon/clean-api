@@ -414,6 +414,49 @@ func TestUsersPage(t *testing.T) {
 	}
 }
 
+// 登出：POST /admin/logout 清除会话 cookie，之后访问受保护页应跳回登录页。
+func TestLogout(t *testing.T) {
+	up := fakeUpstream(t)
+	defer up.Close()
+	ts, _, client := newTestWeb(t, up)
+
+	// 登录态下受保护页可访问
+	page, err := client.Get(ts.URL + "/admin/tokens")
+	if err != nil {
+		t.Fatal(err)
+	}
+	page.Body.Close()
+	if page.StatusCode != http.StatusOK {
+		t.Fatalf("登录后访问 /admin/tokens 应 200，got %d", page.StatusCode)
+	}
+
+	// 退出：POST 应 302 跳登录页
+	resp, err := client.PostForm(ts.URL+"/admin/logout", url.Values{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusFound {
+		t.Fatalf("登出应 302，got %d", resp.StatusCode)
+	}
+	if loc := resp.Header.Get("Location"); loc != "/admin/login" {
+		t.Fatalf("登出后应跳转 /admin/login，got %q", loc)
+	}
+
+	// 会话已清除：再访问受保护页应被重定向回登录页
+	page, err = client.Get(ts.URL + "/admin/tokens")
+	if err != nil {
+		t.Fatal(err)
+	}
+	page.Body.Close()
+	if page.StatusCode != http.StatusFound {
+		t.Fatalf("登出后访问 /admin/tokens 应 302 回登录页，got %d", page.StatusCode)
+	}
+	if loc := page.Header.Get("Location"); loc != "/admin/login" {
+		t.Fatalf("登出后应跳转 /admin/login，got %q", loc)
+	}
+}
+
 func TestTokenCreateWithModelPicker(t *testing.T) {
 	up := fakeUpstream(t)
 	defer up.Close()
