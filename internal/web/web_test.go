@@ -533,6 +533,39 @@ func TestModelsPagePagination(t *testing.T) {
 	}
 }
 
+// 登出加固：即使服务端不认该 cookie（重启/多实例签名密钥变更后），也强制发删除指令，
+// 避免残留 cookie 让 /admin/login 与 /admin/ 判定相反，陷入 ERR_TOO_MANY_REDIRECTS 循环。
+func TestLogoutClearsUnknownCookie(t *testing.T) {
+	up := fakeUpstream(t)
+	defer up.Close()
+	ts, _, _ := newTestWeb(t, up)
+
+	// 无 jar 的裸客户端：手动携带一个伪造的旧签名 cookie
+	client := &http.Client{CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}
+	req, err := http.NewRequest(http.MethodPost, ts.URL+"/admin/logout", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Cookie", "gateway_admin=bogus-invalid-cookie")
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusFound {
+		t.Fatalf("登出应 302，got %d", resp.StatusCode)
+	}
+	if loc := resp.Header.Get("Location"); loc != "/admin/login" {
+		t.Fatalf("登出后应跳转 /admin/login，got %q", loc)
+	}
+	sc := resp.Header.Get("Set-Cookie")
+	if !strings.Contains(sc, "gateway_admin") || !strings.Contains(sc, "Max-Age=0") {
+		t.Fatalf("不认识的 cookie 登出也应发删除指令，Set-Cookie=%q", sc)
+	}
+}
+
 func TestTokenCreateWithModelPicker(t *testing.T) {
 	up := fakeUpstream(t)
 	defer up.Close()

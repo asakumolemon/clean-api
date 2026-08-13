@@ -56,11 +56,12 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 
 // logout POST /admin/logout
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
-	sess, err := s.auth.Get(r)
-	if err == nil {
-		sess.Options.MaxAge = -1
-		_ = sess.Save(r, w)
-	}
+	// Get 失败（如重启/多实例后签名密钥变更）也必须发删除指令：
+	// 否则残留 cookie 会让 /admin/login 与 /admin/ 判定相反，陷入重定向循环。
+	// gorilla Get 解码失败时仍返回可用的空 session，Save 会写出 Max-Age=0 删除 cookie。
+	sess, _ := s.auth.Get(r)
+	sess.Options.MaxAge = -1
+	_ = sess.Save(r, w)
 	http.Redirect(w, r, "/admin/login", http.StatusFound)
 }
 

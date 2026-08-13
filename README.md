@@ -120,6 +120,7 @@ make docker-build
 - **探测失败**：渠道页显示各协议探测证据（状态码 + 响应摘要）。常见原因：`base_url` 少了 `https://`、上游需要代理（当前版本不内置代理）、API key 无效、上游非标准协议（可手动指定类型）。
 - **Anthropic 上游模型列表为空**：Anthropic 原生 API 通常不提供 `GET /v1/models`，模型需在渠道页手动添加（添加渠道时同步到的模型可能为空）。
 - **明文 HTTP 下管理面登录不生效**：`session_secure` 必须保持 `false`（仅 HTTPS 部署时开）。
+- **登出后仍被弹回、或提示「重定向次数过多」**：多为 `session_secret` 未固定导致——缺省随机生成，**重启/多实例（负载均衡）后各进程签名密钥不一致**，残留 cookie 会被部分实例拒识，出现 `/admin/login` 与 `/admin/` 互相重定向（`ERR_TOO_MANY_REDIRECTS`）。请配置固定 `session_secret`（`config.json` 或 `GATEWAY_SESSION_SECRET`，多实例必须相同），并删除浏览器残留 cookie 后重新登录。
 - **换了 `GATEWAY_ENC_KEY`**：库中已加密的渠道 key 将全部无法解密（启动时有明确告警），需重新添加渠道 key。
 - **令牌明文丢了**：令牌只存哈希，无法找回；删掉重新生成。
 - **导入导出**：导入为替换式（单事务、失败回滚）；key 为密文需同一 `GATEWAY_ENC_KEY`，令牌明文不可恢复——迁移后重新生成令牌。
