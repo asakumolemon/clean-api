@@ -43,6 +43,13 @@
 - **健康检查按协议分派**：anthropic 渠道 `ping` 发 `POST /v1/messages`（模型名取渠道内启用模型，占位名会 400 误判）；openai/responses 保持 `GET /v1/models`。
 - **Anthropic 模型列表仍走 `GET /v1/models` + x-api-key 头**：Anthropic 原生 API 无该端点时需渠道页手动添加模型（现状行为，README 已注明）。
 
+## 令牌配置体验优化（M7 后，方案见 docs/token-ux-research.md）
+
+- **白名单弹窗信息透明（方案 B）**：`enabledModelNames` 升级为 `modelOptions` 视图（`internal/web/handlers.go`）——按对外名（alias 优先）去重分组，统计提供渠道总数与健康（active）渠道数（`ListModels` + `ListChannels` 内存聚合，无新 SQL），能力取各渠道**并集**（白名单按名授权，能力只作展示参考）。弹窗每行显示「N 渠道 · M 可用」（0 可用红字「无可用渠道」）+ 能力标签；筛选栏「只看有可用渠道」+ 能力筛选（data-* 属性 + 原生 JS，`applySearch` 三者叠加，隐藏行勾选不受影响）。
+- **一键建令牌（方案 A）**：模型管理页每行「建令牌」按钮 → POST `/admin/tokens` 带 `model` 参数（对外名，alias 优先）；`createToken` 无 `models` 时以 `model` 预填白名单、名称为空自动命名「X 令牌」。**必须同响应 render 展示明文**（不能 302，否则令牌明文丢失——现有 `NewToken` 区块即该模式）。
+- **按客户端一键复制（方案 C）**：生成令牌后展示块从单一 curl 扩展为四项：OpenAI Chat curl、Anthropic Messages curl（x-api-key + anthropic-version）、Claude Code 三环境变量 shell、NextChat 三要素，各带独立复制按钮（复用 `copyText`，id 唯一）。
+- **测试台下拉去重**：`renderPlayground` 按对外名去重（此前多渠道同模型会重复出现）。
+
 ## M2 关键决策
 
 - 渠道 `type`：创建时默认 `auto`（自动探测）；探测成功后写回实际类型；失败保留 auto 供手动指定类型重试（编辑时改类型/base_url 自动触发重探测）。

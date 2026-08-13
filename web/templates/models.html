@@ -62,6 +62,12 @@
                 <button type="submit"
                   class="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100">{{if .Enabled}}禁用{{else}}启用{{end}}</button>
               </form>
+              <!-- 一键建令牌：白名单预填该模型对外名（alias 优先），POST 后直接展示令牌明文 -->
+              <form method="post" action="/admin/tokens" class="inline">
+                <input type="hidden" name="model" value="{{if .Alias}}{{.Alias}}{{else}}{{.Name}}{{end}}">
+                <button type="submit"
+                  class="rounded-md border border-blue-200 bg-blue-50 px-3 py-1.5 text-xs font-medium text-blue-700 hover:bg-blue-100">建令牌</button>
+              </form>
             </td>
           </tr>
           {{else}}

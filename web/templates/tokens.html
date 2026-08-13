@@ -62,14 +62,51 @@
       <p class="font-semibold text-slate-900">令牌已生成，仅显示一次，请立即保存：</p>
       <div class="mt-2 mb-2 rounded-md border border-slate-300 bg-slate-50 p-3 font-mono text-sm break-all">{{.NewToken}}</div>
       <small class="text-sm text-slate-500">数据库只保存其 sha256 哈希，关闭本页后无法再次查看。</small>
-      <div class="mt-3">
-        <p class="mb-1 text-xs font-medium text-slate-500">直接可用的 curl 示例：</p>
-        <pre id="new-token-curl" class="overflow-x-auto rounded-md bg-slate-900 p-4 font-mono text-xs leading-relaxed whitespace-pre text-slate-100">curl {{.BaseURL}}/v1/chat/completions \
+      <div class="mt-3 space-y-3">
+        <p class="text-sm font-medium text-slate-700">按客户端一键复制接入配置：</p>
+        <div>
+          <p class="mb-1 text-xs font-medium text-slate-500">OpenAI Chat（NextChat / Cursor / 各类 SDK）</p>
+          <div class="flex items-start gap-2">
+            <pre id="new-token-curl-openai" class="flex-1 overflow-x-auto rounded-md bg-slate-900 p-3 font-mono text-xs leading-relaxed whitespace-pre text-slate-100">curl {{.BaseURL}}/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer {{.NewToken}}" \
   -d '{"model":"&lt;模型名&gt;","messages":[{"role":"user","content":"你好"}]}'</pre>
-        <button type="button" id="copy-new-token-curl" onclick="copyText('new-token-curl', 'copy-new-token-curl')"
-          class="mt-2 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100">复制 curl 示例</button>
+            <button type="button" id="copy-new-token-openai" onclick="copyText('new-token-curl-openai', 'copy-new-token-openai')"
+              class="shrink-0 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100">复制</button>
+          </div>
+        </div>
+        <div>
+          <p class="mb-1 text-xs font-medium text-slate-500">Anthropic Messages（Claude Code / Anthropic SDK）</p>
+          <div class="flex items-start gap-2">
+            <pre id="new-token-curl-anthropic" class="flex-1 overflow-x-auto rounded-md bg-slate-900 p-3 font-mono text-xs leading-relaxed whitespace-pre text-slate-100">curl {{.BaseURL}}/v1/messages \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: {{.NewToken}}" \
+  -H "anthropic-version: 2023-06-01" \
+  -d '{"model":"&lt;模型名&gt;","max_tokens":1024,"messages":[{"role":"user","content":"你好"}]}'</pre>
+            <button type="button" id="copy-new-token-anthropic" onclick="copyText('new-token-curl-anthropic', 'copy-new-token-anthropic')"
+              class="shrink-0 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100">复制</button>
+          </div>
+        </div>
+        <div>
+          <p class="mb-1 text-xs font-medium text-slate-500">Claude Code（三个环境变量，终端执行后可直接使用）</p>
+          <div class="flex items-start gap-2">
+            <pre id="new-token-shell-claude" class="flex-1 overflow-x-auto rounded-md bg-slate-900 p-3 font-mono text-xs leading-relaxed whitespace-pre text-slate-100">export ANTHROPIC_BASE_URL={{.BaseURL}}
+export ANTHROPIC_AUTH_TOKEN={{.NewToken}}
+export ANTHROPIC_MODEL=&lt;模型名&gt;</pre>
+            <button type="button" id="copy-new-token-shell" onclick="copyText('new-token-shell-claude', 'copy-new-token-shell')"
+              class="shrink-0 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100">复制</button>
+          </div>
+        </div>
+        <div>
+          <p class="mb-1 text-xs font-medium text-slate-500">NextChat 自定义接口</p>
+          <div class="flex items-start gap-2">
+            <pre id="new-token-nextchat" class="flex-1 overflow-x-auto rounded-md bg-slate-900 p-3 font-mono text-xs leading-relaxed whitespace-pre text-slate-100">网关地址：{{.BaseURL}}
+API Key：{{.NewToken}}
+模型：白名单内模型名（如 &lt;模型名&gt;）</pre>
+            <button type="button" id="copy-new-token-nextchat" onclick="copyText('new-token-nextchat', 'copy-new-token-nextchat')"
+              class="shrink-0 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100">复制</button>
+          </div>
+        </div>
       </div>
     </div>
     {{end}}
@@ -102,15 +139,38 @@
 
         <!-- 模型白名单多选弹窗：checkboxes 在表单内，随表单一并提交 -->
         <div id="models-modal" class="fixed inset-0 z-50 hidden items-center justify-center bg-slate-900/50">
-          <div class="w-full max-w-md rounded-lg bg-white p-6 shadow-xl">
+          <div class="w-full max-w-lg rounded-lg bg-white p-6 shadow-xl">
             <h3 class="mb-4 text-lg font-semibold text-slate-900">选择模型白名单</h3>
             <input id="model-search" type="text" placeholder="搜索模型…（过滤不影响已勾选）"
-              class="mb-3 w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200">
+              class="mb-2 w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200">
+            <div class="mb-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-600">
+              <label class="flex cursor-pointer items-center gap-1">
+                <input type="checkbox" id="only-available" class="h-3.5 w-3.5 accent-blue-600"> 只看有可用渠道
+              </label>
+              <span class="text-slate-400">能力筛选：</span>
+              <label class="flex cursor-pointer items-center gap-1"><input type="checkbox" class="cap-filter h-3.5 w-3.5 accent-blue-600" data-cap="system"> system</label>
+              <label class="flex cursor-pointer items-center gap-1"><input type="checkbox" class="cap-filter h-3.5 w-3.5 accent-blue-600" data-cap="tools"> tools</label>
+              <label class="flex cursor-pointer items-center gap-1"><input type="checkbox" class="cap-filter h-3.5 w-3.5 accent-blue-600" data-cap="vision"> vision</label>
+              <label class="flex cursor-pointer items-center gap-1"><input type="checkbox" class="cap-filter h-3.5 w-3.5 accent-blue-600" data-cap="json"> json</label>
+            </div>
             <div class="max-h-80 space-y-1 overflow-y-auto pr-1">
               {{range .Models}}
-              <label class="model-row flex cursor-pointer items-center gap-2 rounded-md px-3 py-2 text-sm text-slate-700 hover:bg-slate-50">
-                <input type="checkbox" name="models" value="{{.}}" class="model-checkbox h-4 w-4 accent-blue-600">
-                <span class="font-mono text-xs">{{.}}</span>
+              <label class="model-row flex cursor-pointer items-start gap-2 rounded-md px-3 py-2 text-sm text-slate-700 hover:bg-slate-50"
+                data-active="{{.ActiveCount}}" data-system="{{if .Caps.System}}1{{else}}0{{end}}"
+                data-tools="{{if .Caps.Tools}}1{{else}}0{{end}}" data-vision="{{if .Caps.Vision}}1{{else}}0{{end}}"
+                data-json="{{if .Caps.JSONMode}}1{{else}}0{{end}}">
+                <input type="checkbox" name="models" value="{{.Name}}" class="model-checkbox mt-1 h-4 w-4 accent-blue-600">
+                <span class="min-w-0 flex-1">
+                  <span class="block truncate font-mono text-xs">{{.Name}}</span>
+                  <span class="block text-xs">
+                    {{if .ActiveCount}}
+                    <span class="text-slate-400">{{.ChannelCount}} 渠道 · {{.ActiveCount}} 可用</span>
+                    {{else}}
+                    <span class="text-red-500">无可用渠道（{{.ChannelCount}} 渠道均不可用）</span>
+                    {{end}}
+                  </span>
+                  <span class="mt-0.5 block text-[10px] text-slate-400">system {{if .Caps.System}}✓{{else}}✗{{end}} · tools {{if .Caps.Tools}}✓{{else}}✗{{end}} · vision {{if .Caps.Vision}}✓{{else}}✗{{end}} · json {{if .Caps.JSONMode}}✓{{else}}✗{{end}}</span>
+                </span>
               </label>
               {{else}}
               <p class="px-3 py-2 text-sm text-slate-500">暂无可用模型</p>
@@ -204,19 +264,28 @@ function fallbackCopy(text) {
   const allowAll = document.getElementById('allow_all');
   const search = document.getElementById('model-search');
   const searchEmpty = document.getElementById('model-search-empty');
+  const onlyAvail = document.getElementById('only-available');
+  const capFilters = Array.from(document.querySelectorAll('.cap-filter'));
   const modelRows = Array.from(document.querySelectorAll('.model-row'));
 
   function selected() {
     return Array.from(document.querySelectorAll('.model-checkbox:checked')).map(function (c) { return c.value; });
   }
+  // 搜索文本 + 只看有可用渠道 + 能力筛选 三者叠加；隐藏行已勾选仍随表单提交，不受过滤影响。
   function applySearch() {
     if (!search) return;
     const q = search.value.trim().toLowerCase();
+    const onlyAvailOn = onlyAvail && onlyAvail.checked;
+    const caps = capFilters.filter(function (c) { return c.checked; }).map(function (c) { return c.dataset.cap; });
     let shown = 0;
     modelRows.forEach(function (row) {
       const name = row.querySelector('.model-checkbox').value.toLowerCase();
-      const hit = q === '' || name.includes(q);
-      row.style.display = hit ? '' : 'none'; // 隐藏行已勾选仍随表单提交，不受过滤影响
+      let hit = q === '' || name.includes(q);
+      if (hit && onlyAvailOn) hit = row.dataset.active !== '0';
+      if (hit && caps.length) {
+        caps.forEach(function (cap) { if (row.dataset[cap] !== '1') hit = false; });
+      }
+      row.style.display = hit ? '' : 'none';
       if (hit) shown++;
     });
     if (searchEmpty) searchEmpty.style.display = shown > 0 ? 'none' : 'block'; // 覆盖模板 hidden 类
@@ -243,6 +312,8 @@ function fallbackCopy(text) {
   document.getElementById('modal-ok').addEventListener('click', function () { renderChips(); close(); });
   allowAll.addEventListener('change', renderChips);
   if (search) search.addEventListener('input', applySearch);
+  if (onlyAvail) onlyAvail.addEventListener('change', applySearch);
+  capFilters.forEach(function (c) { c.addEventListener('change', applySearch); });
   renderChips();
   applySearch();
 })();

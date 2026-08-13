@@ -63,6 +63,7 @@ func (s *Server) renderPlayground(w http.ResponseWriter, r *http.Request, model,
 	ctx := r.Context()
 	all, _ := s.store.ListModels(ctx)
 	models := []playgroundModel{}
+	seen := map[string]bool{}
 	for _, m := range all {
 		if !m.Enabled {
 			continue
@@ -71,6 +72,10 @@ func (s *Server) renderPlayground(w http.ResponseWriter, r *http.Request, model,
 		if m.Alias != "" {
 			name = m.Alias
 		}
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
 		models = append(models, playgroundModel{Name: name})
 	}
 	s.render(w, r, "playground.html", baseData("测试台 · 智能 API 网关", "playground", map[string]any{

@@ -108,12 +108,14 @@ func (s *Server) tokensPage(w http.ResponseWriter, r *http.Request) {
 	s.render(w, r, "tokens.html", baseData("令牌管理 · 智能 API 网关", "tokens", map[string]any{
 		"Flash":   s.readFlash(w, r),
 		"Tokens":  tokens,
-		"Models":  enabledModelNames(ctx, s.store),
+		"Models":  modelOptions(ctx, s.store),
 		"BaseURL": baseURL(r),
 	}))
 }
 
 // createToken POST /admin/tokens
+// 支持两种来源：令牌页表单（name + models 多选 / allow_all），
+// 以及模型页「建令牌」一键直达（model 参数预填白名单，名称为空时自动命名）。
 func (s *Server) createToken(w http.ResponseWriter, r *http.Request) {
 	name := r.FormValue("name")
 	allowAll := r.FormValue("allow_all") == "on"
@@ -122,6 +124,12 @@ func (s *Server) createToken(w http.ResponseWriter, r *http.Request) {
 	var models []string
 	for _, v := range r.Form["models"] {
 		models = append(models, splitModels(v)...)
+	}
+	if len(models) == 0 && r.FormValue("model") != "" {
+		models = []string{r.FormValue("model")}
+		if name == "" {
+			name = r.FormValue("model") + " 令牌"
+		}
 	}
 
 	if name == "" {
@@ -153,7 +161,7 @@ func (s *Server) createToken(w http.ResponseWriter, r *http.Request) {
 	s.render(w, r, "tokens.html", baseData("令牌管理 · 智能 API 网关", "tokens", map[string]any{
 		"Tokens":   tokens,
 		"NewToken": plain,
-		"Models":   enabledModelNames(ctx, s.store),
+		"Models":   modelOptions(ctx, s.store),
 		"BaseURL":  baseURL(r),
 	}))
 }
@@ -169,14 +177,28 @@ func baseURL(r *http.Request) string {
 	return scheme + "://" + r.Host
 }
 
-// enabledModelNames 启用模型的对外名（alias 非空用 alias），去重后排序，供令牌白名单弹窗多选。
-func enabledModelNames(ctx context.Context, st *store.Store) []string {
+// modelOption 令牌白名单弹窗的模型选项视图：对外名 + 渠道覆盖（总渠道/健康渠道）+ 能力汇总。
+type modelOption struct {
+	Name         string
+	ChannelCount int
+	ActiveCount  int
+	Caps         store.Capabilities
+}
+
+// modelOptions 启用模型的对外名选项：按对外名（alias 非空用 alias）去重分组，
+// 统计提供该模型的渠道数与健康（active）渠道数，能力取各渠道并集，排序后返回。
+// 供令牌白名单弹窗展示「多渠道提供同一模型」的覆盖情况，避免配上无可用渠道的模型。
+func modelOptions(ctx context.Context, st *store.Store) []modelOption {
 	models, err := st.ListModels(ctx)
 	if err != nil {
 		return nil
 	}
-	seen := map[string]bool{}
-	var out []string
+	chans, _ := st.ListChannels(ctx)
+	active := make(map[int64]bool, len(chans))
+	for _, c := range chans {
+		active[c.ID] = c.Status == "active"
+	}
+	byName := map[string]*modelOption{}
 	for _, m := range models {
 		if !m.Enabled {
 			continue
@@ -185,13 +207,29 @@ func enabledModelNames(ctx context.Context, st *store.Store) []string {
 		if m.Alias != "" {
 			name = m.Alias
 		}
-		if seen[name] {
-			continue
+		opt := byName[name]
+		if opt == nil {
+			opt = &modelOption{Name: name}
+			byName[name] = opt
 		}
-		seen[name] = true
-		out = append(out, name)
+		opt.ChannelCount++
+		if active[m.ChannelID] {
+			opt.ActiveCount++
+		}
+		opt.Caps.System = opt.Caps.System || m.Capabilities.System
+		opt.Caps.Tools = opt.Caps.Tools || m.Capabilities.Tools
+		opt.Caps.Vision = opt.Caps.Vision || m.Capabilities.Vision
+		opt.Caps.JSONMode = opt.Caps.JSONMode || m.Capabilities.JSONMode
 	}
-	sort.Strings(out)
+	names := make([]string, 0, len(byName))
+	for n := range byName {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	out := make([]modelOption, 0, len(names))
+	for _, n := range names {
+		out = append(out, *byName[n])
+	}
 	return out
 }
 

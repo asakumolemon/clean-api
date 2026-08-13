@@ -692,6 +692,12 @@ func TestTokenCreateWithModelPicker(t *testing.T) {
 			t.Errorf("弹窗应包含搜索功能元素 %q", s)
 		}
 	}
+	// 渠道覆盖信息与筛选：可用渠道开关 + 能力筛选 + 渠道数展示
+	for _, s := range []string{`id="only-available"`, "cap-filter", "1 渠道 · 1 可用"} {
+		if !strings.Contains(html, s) {
+			t.Errorf("弹窗应包含渠道覆盖/筛选元素 %q", s)
+		}
+	}
 
 	// 多值提交 models（模拟弹窗勾选两个模型）
 	resp, err := client.PostForm(ts.URL+"/admin/tokens", url.Values{
@@ -715,6 +721,148 @@ func TestTokenCreateWithModelPicker(t *testing.T) {
 	if toks[0].ModelWhitelist[0] != "model-a" || toks[0].ModelWhitelist[1] != "model-b" {
 		t.Error("白名单应为 model-a/model-b", toks[0].ModelWhitelist)
 	}
+}
+
+// modelOptions 视图：多渠道提供同一对外名时按名分组，统计渠道覆盖（总/健康）与能力并集。
+func TestModelOptionsView(t *testing.T) {
+	up := fakeUpstream(t)
+	defer up.Close()
+	_, st, _ := newTestWeb(t, up)
+	ctx := context.Background()
+
+	chA, err := st.CreateChannel(ctx, "A", "openai", up.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chB, err := st.CreateChannel(ctx, "B", "openai", up.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chC, err := st.CreateChannel(ctx, "C", "openai", up.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetChannelStatus(ctx, chB, "down"); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if _, err := st.SyncModels(ctx, chA, map[string]store.Capabilities{
+		"m1": {System: true, Tools: true}, "m2": {},
+	}, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.SyncModels(ctx, chB, map[string]store.Capabilities{
+		"m1": {Vision: true}, "m-down": {},
+	}, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.SyncModels(ctx, chC, map[string]store.Capabilities{"m1": {}}, now); err != nil {
+		t.Fatal(err)
+	}
+	// chC 的 m1 设别名 → 对外名变为 m1-outer
+	mc, err := st.GetModel(ctx, chC, "m1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetModelAlias(ctx, mc.ID, "m1-outer"); err != nil {
+		t.Fatal(err)
+	}
+
+	opts := modelOptions(ctx, st)
+	names := make([]string, 0, len(opts))
+	for _, o := range opts {
+		names = append(names, o.Name)
+	}
+	if want := []string{"m-down", "m1", "m1-outer", "m2"}; !slicesEqual(names, want) {
+		t.Fatalf("选项应按对外名排序去重，got %v want %v", names, want)
+	}
+	byName := map[string]modelOption{}
+	for _, o := range opts {
+		byName[o.Name] = o
+	}
+	// m1：chA(active)+chB(down) 两个渠道，健康 1；能力取并集 system/tools/vision
+	m1 := byName["m1"]
+	if m1.ChannelCount != 2 || m1.ActiveCount != 1 {
+		t.Errorf("m1 应为 2 渠道 1 可用，got %d/%d", m1.ChannelCount, m1.ActiveCount)
+	}
+	if !m1.Caps.System || !m1.Caps.Tools || !m1.Caps.Vision || m1.Caps.JSONMode {
+		t.Errorf("m1 能力应为 system/tools/vision 并集（无 json），got %+v", m1.Caps)
+	}
+	// m1-outer：仅 chC（active）提供
+	mo := byName["m1-outer"]
+	if mo.ChannelCount != 1 || mo.ActiveCount != 1 || mo.Caps.System || mo.Caps.Vision {
+		t.Errorf("m1-outer 应为 1 渠道 1 可用且无能力，got %+v", mo)
+	}
+	// m-down：仅 down 渠道提供 → 无可用渠道（弹窗红字）
+	md := byName["m-down"]
+	if md.ChannelCount != 1 || md.ActiveCount != 0 {
+		t.Errorf("m-down 应为 1 渠道 0 可用，got %d/%d", md.ChannelCount, md.ActiveCount)
+	}
+}
+
+// 一键建令牌：模型页带 model 参数直达 /admin/tokens，白名单预填该模型对外名（alias 优先），
+// 名称为空自动命名，POST 响应直接展示令牌明文（不可重定向，否则明文丢失）。
+func TestTokenCreateOneClick(t *testing.T) {
+	up := fakeUpstream(t)
+	defer up.Close()
+	ts, st, client := newTestWeb(t, up)
+	ctx := context.Background()
+
+	chID, err := st.CreateChannel(ctx, "测试渠道", "openai", up.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = st.AddChannelKey(ctx, chID, "sk-test")
+	if _, err := st.SyncModels(ctx, chID, map[string]store.Capabilities{"real-name": {}}, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	m, err := st.GetModel(ctx, chID, "real-name")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetModelAlias(ctx, m.ID, "alias-name"); err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := client.PostForm(ts.URL+"/admin/tokens", url.Values{"model": {"alias-name"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := make([]byte, 2<<20)
+	n, _ := resp.Body.Read(body)
+	resp.Body.Close()
+	html := string(body[:n])
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("一键建令牌应 200 并直接展示令牌明文，got %d", resp.StatusCode)
+	}
+	for _, s := range []string{"令牌已生成", "alias-name 令牌", "new-token-curl-openai", "new-token-shell-claude"} {
+		if !strings.Contains(html, s) {
+			t.Errorf("生成后页面应包含 %q（一键复制配置块）", s)
+		}
+	}
+
+	toks, _ := st.ListTokens(ctx)
+	if len(toks) != 1 {
+		t.Fatalf("应创建 1 个令牌，got %d", len(toks))
+	}
+	if toks[0].Name != "alias-name 令牌" {
+		t.Errorf("令牌名应自动命名为 alias-name 令牌，got %q", toks[0].Name)
+	}
+	if len(toks[0].ModelWhitelist) != 1 || toks[0].ModelWhitelist[0] != "alias-name" {
+		t.Errorf("白名单应预填对外名 alias-name，got %+v", toks[0].ModelWhitelist)
+	}
+}
+
+func slicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func itoa64(id int64) string {
