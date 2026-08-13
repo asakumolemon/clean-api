@@ -45,7 +45,7 @@ func (s *Server) modelsPage(w http.ResponseWriter, r *http.Request) {
 	for _, m := range models {
 		views = append(views, modelView{Model: m, ChannelName: chName[m.ChannelID]})
 	}
-	s.render(w, "models.html", baseData("模型管理 · 智能 API 网关", "models", map[string]any{
+	s.render(w, r, "models.html", baseData("模型管理 · 智能 API 网关", "models", map[string]any{
 		"Flash":      s.readFlash(w, r),
 		"Models":     views,
 		"Page":       page,

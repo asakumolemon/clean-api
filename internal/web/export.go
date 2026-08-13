@@ -10,7 +10,7 @@ import (
 
 // exportPage GET /admin/export
 func (s *Server) exportPage(w http.ResponseWriter, r *http.Request) {
-	s.render(w, "export.html", baseData("导入导出 · 智能 API 网关", "export", map[string]any{
+	s.render(w, r, "export.html", baseData("导入导出 · 智能 API 网关", "export", map[string]any{
 		"Flash": s.readFlash(w, r),
 	}))
 }

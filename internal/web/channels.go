@@ -63,7 +63,7 @@ func (s *Server) channelsPage(w http.ResponseWriter, r *http.Request) {
 		}
 		views = append(views, v)
 	}
-	s.render(w, "channels.html", baseData("渠道管理 · 智能 API 网关", "channels", map[string]any{
+	s.render(w, r, "channels.html", baseData("渠道管理 · 智能 API 网关", "channels", map[string]any{
 		"Flash":    s.readFlash(w, r),
 		"Channels": views,
 		"Polling":  polling,
@@ -124,7 +124,7 @@ func (s *Server) channelEditPage(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/admin/channels", http.StatusFound)
 		return
 	}
-	s.render(w, "channel_edit.html", baseData("编辑渠道 · 智能 API 网关", "channels", map[string]any{
+	s.render(w, r, "channel_edit.html", baseData("编辑渠道 · 智能 API 网关", "channels", map[string]any{
 		"Flash": s.readFlash(w, r),
 		"Ch":    ch,
 	}))

@@ -18,7 +18,7 @@ func (s *Server) loginPage(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/admin/", http.StatusFound)
 		return
 	}
-	s.render(w, "login.html", baseData("登录 · 智能 API 网关", "", map[string]any{
+	s.render(w, r, "login.html", baseData("登录 · 智能 API 网关", "", map[string]any{
 		"Flash": s.readFlash(w, r),
 	}))
 }
@@ -85,7 +85,7 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 			StatusText:  statusLabel(l.Status),
 		})
 	}
-	s.render(w, "dashboard.html", baseData("仪表盘 · 智能 API 网关", "dashboard", map[string]any{
+	s.render(w, r, "dashboard.html", baseData("仪表盘 · 智能 API 网关", "dashboard", map[string]any{
 		"Flash":    s.readFlash(w, r),
 		"Users":    users,
 		"Tokens":   tokens,
@@ -105,7 +105,7 @@ func channelsList(ctx context.Context, s *Server) []store.Channel {
 func (s *Server) tokensPage(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	tokens, _ := s.store.ListTokens(ctx)
-	s.render(w, "tokens.html", baseData("令牌管理 · 智能 API 网关", "tokens", map[string]any{
+	s.render(w, r, "tokens.html", baseData("令牌管理 · 智能 API 网关", "tokens", map[string]any{
 		"Flash":   s.readFlash(w, r),
 		"Tokens":  tokens,
 		"Models":  enabledModelNames(ctx, s.store),
@@ -150,7 +150,7 @@ func (s *Server) createToken(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 	tokens, _ := s.store.ListTokens(ctx)
-	s.render(w, "tokens.html", baseData("令牌管理 · 智能 API 网关", "tokens", map[string]any{
+	s.render(w, r, "tokens.html", baseData("令牌管理 · 智能 API 网关", "tokens", map[string]any{
 		"Tokens":   tokens,
 		"NewToken": plain,
 		"Models":   enabledModelNames(ctx, s.store),

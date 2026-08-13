@@ -26,7 +26,7 @@ func (s *Server) usersPage(w http.ResponseWriter, r *http.Request) {
 		tokens, _ := s.store.ListTokensByUser(ctx, u.ID)
 		views = append(views, userView{User: u, TokenCount: len(tokens)})
 	}
-	s.render(w, "users.html", baseData("用户管理 · 智能 API 网关", "users", map[string]any{
+	s.render(w, r, "users.html", baseData("用户管理 · 智能 API 网关", "users", map[string]any{
 		"Flash": s.readFlash(w, r),
 		"Users": views,
 	}))

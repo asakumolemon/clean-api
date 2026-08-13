@@ -73,7 +73,7 @@ func (s *Server) renderPlayground(w http.ResponseWriter, r *http.Request, model,
 		}
 		models = append(models, playgroundModel{Name: name})
 	}
-	s.render(w, "playground.html", baseData("测试台 · 智能 API 网关", "playground", map[string]any{
+	s.render(w, r, "playground.html", baseData("测试台 · 智能 API 网关", "playground", map[string]any{
 		"Flash":   s.readFlash(w, r),
 		"Models":  models,
 		"Model":   model,

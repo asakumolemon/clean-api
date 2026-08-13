@@ -19,13 +19,15 @@
   <h1 class="px-4 py-5 text-base font-bold text-white">智能 API 网关</h1>
   <nav class="flex-1 space-y-0.5 overflow-y-auto px-3">
     <a href="/admin/" class="block rounded-md px-3 py-2 text-sm hover:bg-slate-800 {{if eq .Active "dashboard"}}bg-blue-600 text-white{{end}}">仪表盘</a>
+    <a href="/admin/logs" class="block rounded-md px-3 py-2 text-sm hover:bg-slate-800 {{if eq .Active "logs"}}bg-blue-600 text-white{{end}}">请求日志</a>
+    <a href="/admin/playground" class="block rounded-md px-3 py-2 text-sm hover:bg-slate-800 {{if eq .Active "playground"}}bg-blue-600 text-white{{end}}">测试台</a>
+    {{if eq .Role "admin"}}
     <a href="/admin/channels" class="block rounded-md px-3 py-2 text-sm hover:bg-slate-800 {{if eq .Active "channels"}}bg-blue-600 text-white{{end}}">渠道管理</a>
     <a href="/admin/models" class="block rounded-md px-3 py-2 text-sm hover:bg-slate-800 {{if eq .Active "models"}}bg-blue-600 text-white{{end}}">模型管理</a>
     <a href="/admin/tokens" class="block rounded-md px-3 py-2 text-sm hover:bg-slate-800 {{if eq .Active "tokens"}}bg-blue-600 text-white{{end}}">令牌管理</a>
-    <a href="/admin/logs" class="block rounded-md px-3 py-2 text-sm hover:bg-slate-800 {{if eq .Active "logs"}}bg-blue-600 text-white{{end}}">请求日志</a>
-    <a href="/admin/playground" class="block rounded-md px-3 py-2 text-sm hover:bg-slate-800 {{if eq .Active "playground"}}bg-blue-600 text-white{{end}}">测试台</a>
     <a href="/admin/users" class="block rounded-md px-3 py-2 text-sm hover:bg-slate-800 {{if eq .Active "users"}}bg-blue-600 text-white{{end}}">用户管理</a>
     <a href="/admin/export" class="block rounded-md px-3 py-2 text-sm hover:bg-slate-800 {{if eq .Active "export"}}bg-blue-600 text-white{{end}}">导入导出</a>
+    {{end}}
   </nav>
   <div class="px-4 py-4">
     <form method="post" action="/admin/logout">

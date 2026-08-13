@@ -566,6 +566,90 @@ func TestLogoutClearsUnknownCookie(t *testing.T) {
 	}
 }
 
+// 角色分级：user 角色可登录后台访问只读页（仪表盘/日志/测试台），
+// 管理页（令牌/渠道/模型/用户/导出）302 回仪表盘并提示无权限；侧边栏只显示只读导航。
+func TestUserRoleReadOnly(t *testing.T) {
+	up := fakeUpstream(t)
+	defer up.Close()
+	ts, st, _ := newTestWeb(t, up)
+	ctx := context.Background()
+
+	hash, _ := auth.HashPassword("bob123")
+	if _, err := st.CreateUser(ctx, "bob", hash, "user"); err != nil {
+		t.Fatal(err)
+	}
+
+	jar, _ := cookiejar.New(nil)
+	bob := &http.Client{Jar: jar, CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}
+	resp, err := bob.PostForm(ts.URL+"/admin/login", url.Values{"username": {"bob"}, "password": {"bob123"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusFound || resp.Header.Get("Location") != "/admin/" {
+		t.Fatalf("bob 登录应 302 /admin/，got %d loc=%q", resp.StatusCode, resp.Header.Get("Location"))
+	}
+
+	get := func(path string) (int, string) {
+		t.Helper()
+		page, err := bob.Get(ts.URL + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer page.Body.Close()
+		body := make([]byte, 2<<20)
+		n, _ := page.Body.Read(body)
+		return page.StatusCode, string(body[:n])
+	}
+
+	// 只读页可访问
+	for _, p := range []string{"/admin/", "/admin/logs", "/admin/playground"} {
+		code, _ := get(p)
+		if code != http.StatusOK {
+			t.Errorf("user 应能访问 %s（200），got %d", p, code)
+		}
+	}
+	// 仪表盘侧边栏：只读导航在，管理导航不在
+	code, html := get("/admin/")
+	if code != http.StatusOK {
+		t.Fatalf("仪表盘应 200，got %d", code)
+	}
+	for _, s := range []string{"仪表盘", "请求日志", "测试台"} {
+		if !strings.Contains(html, s) {
+			t.Errorf("user 侧边栏应包含 %q", s)
+		}
+	}
+	for _, s := range []string{"渠道管理", "模型管理", "令牌管理", "用户管理", "导入导出"} {
+		if strings.Contains(html, s) {
+			t.Errorf("user 侧边栏不应包含 %q", s)
+		}
+	}
+
+	// 管理页 302 回仪表盘
+	for _, p := range []string{"/admin/tokens", "/admin/channels", "/admin/models", "/admin/users", "/admin/export"} {
+		code, _ := get(p)
+		if code != http.StatusFound {
+			t.Errorf("user 访问 %s 应 302，got %d", p, code)
+		}
+	}
+	// 管理 POST 操作同样被拒
+	resp, err = bob.PostForm(ts.URL+"/admin/tokens", url.Values{"name": {"x"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusFound || resp.Header.Get("Location") != "/admin/" {
+		t.Fatalf("user 提交管理 POST 应 302 /admin/，got %d loc=%q", resp.StatusCode, resp.Header.Get("Location"))
+	}
+	// 无权限提示 flash
+	_, html = get("/admin/")
+	if !strings.Contains(html, "无权限") {
+		t.Error("被拒后回仪表盘应显示无权限提示")
+	}
+}
+
 func TestTokenCreateWithModelPicker(t *testing.T) {
 	up := fakeUpstream(t)
 	defer up.Close()

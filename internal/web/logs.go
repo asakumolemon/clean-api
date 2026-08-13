@@ -91,7 +91,7 @@ func (s *Server) logsPage(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	s.render(w, "logs.html", baseData("请求日志 · 智能 API 网关", "logs", map[string]any{
+	s.render(w, r, "logs.html", baseData("请求日志 · 智能 API 网关", "logs", map[string]any{
 		"Flash":          s.readFlash(w, r),
 		"Logs":           views,
 		"Filter":         f,

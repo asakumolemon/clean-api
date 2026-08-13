@@ -66,7 +66,7 @@
 - **导入导出**：全量 JSON（users/tokens/channels/channel_keys/models），独立 DTO 字段小写；导入为替换式（单事务清空重建，保留原 id，失败整体回滚）；令牌只含 hash 明文不可恢复、key 为密文需同一 `GATEWAY_ENC_KEY`——页面有注明。
 - **全局重定向** `model_redirects`：api 层白名单校验用原始对外名，router 层查映射替换后再路由（与渠道内 alias 互补）。
 - **用户管理**：删除用户先删其全部令牌（tokens 外键 REFERENCES users 已开启）；禁止删除当前登录账号；`adminOnly` 中间件每次回库读角色，改角色即时生效。
-- 管理面仍为 admin-only（用户角色仅 API 使用，已确认不做分级）。
+- **角色分级（M5 后新增决策，覆盖旧「admin-only」）**：user 角色可登录后台访问**只读页**（仪表盘 `/`、请求日志 `/logs`、测试台 `/playground`+`/playground/chat`，`authOnly` 中间件）；管理页（令牌/渠道/模型/用户/导入导出）仅 admin（`adminOnly`）。`adminOnly` 对已登录非 admin 返回 302 `/admin/` + flash「无权限」，不跳登录页（避免 user 误以为被登出）；侧边栏导航按 `.Role` 渲染（`render` 统一注入），user 只显示只读导航。
 
 ## M4 关键决策
 

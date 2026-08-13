@@ -41,15 +41,26 @@ func New(s *store.Store, am *auth.SessionManager, chm *channel.Manager, rt *rout
 }
 
 // Mount 注册 /admin 路由。
+// 角色分级：任意已登录角色（含 user）可访问只读页（仪表盘/日志/测试台），
+// 管理页（令牌/渠道/模型/用户/导入导出）仅 admin。
 func (s *Server) Mount(r chi.Router) {
 	r.Route("/admin", func(r chi.Router) {
 		r.Get("/login", s.loginPage)
 		r.Post("/login", s.login)
 		r.Post("/logout", s.logout)
 
+		// 只读页：任意登录角色（user 可访问）
+		r.Group(func(r chi.Router) {
+			r.Use(s.authOnly)
+			r.Get("/", s.dashboard)
+			r.Get("/logs", s.logsPage)
+			r.Get("/playground", s.playgroundPage)
+			r.Post("/playground/chat", s.playgroundChat)
+		})
+
+		// 管理页：仅 admin
 		r.Group(func(r chi.Router) {
 			r.Use(s.adminOnly)
-			r.Get("/", s.dashboard)
 			r.Get("/tokens", s.tokensPage)
 			r.Post("/tokens", s.createToken)
 			r.Post("/tokens/{id}/toggle", s.toggleToken)
@@ -66,9 +77,6 @@ func (s *Server) Mount(r chi.Router) {
 			r.Post("/models/{id}/toggle", s.toggleModel)
 			r.Post("/models/{id}/alias", s.setModelAlias)
 			r.Post("/models/{id}/override", s.overrideModel)
-			r.Get("/logs", s.logsPage)
-			r.Get("/playground", s.playgroundPage)
-			r.Post("/playground/chat", s.playgroundChat)
 			r.Get("/users", s.usersPage)
 			r.Post("/users", s.createUser)
 			r.Post("/users/{id}/role", s.setUserRole)
@@ -81,9 +89,14 @@ func (s *Server) Mount(r chi.Router) {
 	})
 }
 
-// render 渲染指定模板。
-func (s *Server) render(w http.ResponseWriter, name string, data map[string]any) {
+// render 渲染指定模板。统一注入 Version 与当前用户 Role（侧栏按角色显示导航）。
+func (s *Server) render(w http.ResponseWriter, r *http.Request, name string, data map[string]any) {
 	data["Version"] = s.version // 侧栏版本展示
+	if u := s.currentUser(w, r); u != nil {
+		data["Role"] = u.Role
+	} else {
+		data["Role"] = ""
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := s.tpl.ExecuteTemplate(w, name, data); err != nil {
 		http.Error(w, "模板渲染失败: "+err.Error(), http.StatusInternalServerError)
@@ -126,12 +139,29 @@ func (s *Server) readFlash(w http.ResponseWriter, r *http.Request) string {
 	return ""
 }
 
-// adminOnly 管理面登录态校验：未登录/非 admin 一律跳登录页。
+// authOnly 管理面登录态校验（任意角色）：未登录跳登录页。user 角色只读页用。
+func (s *Server) authOnly(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.currentUser(w, r) == nil {
+			http.Redirect(w, r, "/admin/login", http.StatusFound)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// adminOnly 管理页权限校验：未登录跳登录页；已登录但非 admin 提示无权限并回仪表盘
+// （user 可访问 /admin/，避免跳登录页造成「被登出」的错觉）。
 func (s *Server) adminOnly(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		user := s.currentUser(w, r)
-		if user == nil || user.Role != "admin" {
+		if user == nil {
 			http.Redirect(w, r, "/admin/login", http.StatusFound)
+			return
+		}
+		if user.Role != "admin" {
+			s.setFlash(w, r, "无权限：该页面仅管理员可访问")
+			http.Redirect(w, r, "/admin/", http.StatusFound)
 			return
 		}
 		next.ServeHTTP(w, r)
