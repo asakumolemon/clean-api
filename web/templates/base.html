@@ -15,9 +15,9 @@
 {{end}}
 
 {{define "sidebar"}}
-<aside class="flex w-56 shrink-0 flex-col border-r border-slate-200 bg-slate-900 text-slate-200">
+<aside class="sticky top-0 flex h-dvh w-56 shrink-0 flex-col border-r border-slate-200 bg-slate-900 text-slate-200">
   <h1 class="px-4 py-5 text-base font-bold text-white">智能 API 网关</h1>
-  <nav class="flex-1 space-y-0.5 px-3">
+  <nav class="flex-1 space-y-0.5 overflow-y-auto px-3">
     <a href="/admin/" class="block rounded-md px-3 py-2 text-sm hover:bg-slate-800 {{if eq .Active "dashboard"}}bg-blue-600 text-white{{end}}">仪表盘</a>
     <a href="/admin/channels" class="block rounded-md px-3 py-2 text-sm hover:bg-slate-800 {{if eq .Active "channels"}}bg-blue-600 text-white{{end}}">渠道管理</a>
     <a href="/admin/models" class="block rounded-md px-3 py-2 text-sm hover:bg-slate-800 {{if eq .Active "models"}}bg-blue-600 text-white{{end}}">模型管理</a>
