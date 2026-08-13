@@ -25,6 +25,7 @@
             <td class="px-4 py-3 font-mono text-xs">{{.Name}}</td>
             <td class="px-4 py-3">
               <form method="post" action="/admin/models/{{.ID}}/alias" class="flex gap-2">
+                <input type="hidden" name="page" value="{{$.Page}}">
                 <input name="alias" type="text" value="{{.Alias}}" placeholder="对外别名"
                   class="w-32 rounded-md border border-slate-300 px-2 py-1.5 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200">
                 <button type="submit"
@@ -42,6 +43,7 @@
                   class="inline-block cursor-pointer list-none rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100 [&::-webkit-details-marker]:hidden">覆盖能力</summary>
                 <div class="absolute mt-2 rounded-md border border-slate-200 bg-white p-4 shadow-lg">
                   <form method="post" action="/admin/models/{{.ID}}/override" class="space-y-2">
+                    <input type="hidden" name="page" value="{{$.Page}}">
                     <label class="flex items-center gap-2 text-sm text-slate-700"><input type="checkbox" name="system"
                       class="h-4 w-4 accent-blue-600"> system</label>
                     <label class="flex items-center gap-2 text-sm text-slate-700"><input type="checkbox" name="tools"
@@ -56,6 +58,7 @@
                 </div>
               </details>
               <form method="post" action="/admin/models/{{.ID}}/toggle" class="inline">
+                <input type="hidden" name="page" value="{{$.Page}}">
                 <button type="submit"
                   class="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100">{{if .Enabled}}禁用{{else}}启用{{end}}</button>
               </form>
@@ -66,6 +69,23 @@
           {{end}}
         </tbody>
       </table>
+    </div>
+
+    <p class="mt-4 text-sm text-slate-500">共 {{.Total}} 个模型</p>
+    <div class="mt-2 grid grid-cols-1 items-center gap-4 md:grid-cols-3">
+      <div>
+        {{if gt .Page 1}}
+        <a href="/admin/models?page={{sub .Page 1}}"
+          class="inline-block rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100">上一页</a>
+        {{end}}
+      </div>
+      <div class="text-center text-sm text-slate-500">第 {{.Page}} / {{.TotalPages}} 页</div>
+      <div class="text-right">
+        {{if lt .Page .TotalPages}}
+        <a href="/admin/models?page={{add .Page 1}}"
+          class="inline-block rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100">下一页</a>
+        {{end}}
+      </div>
     </div>
   </main>
 </div>

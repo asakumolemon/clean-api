@@ -89,6 +89,26 @@ func (s *Store) ListModels(ctx context.Context) ([]Model, error) {
 	return models, rows.Err()
 }
 
+// ListModelsPage 分页查询模型（管理页列表用，排序与 ListModels 一致）。
+func (s *Store) ListModelsPage(ctx context.Context, limit, offset int) ([]Model, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, channel_id, name, enabled, COALESCE(alias,''), capabilities, COALESCE(capability_override,''), last_sync_at
+		FROM models ORDER BY channel_id, name LIMIT ? OFFSET ?`, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	models := []Model{}
+	for rows.Next() {
+		var m Model
+		if err := scanModelRow(rows, &m); err != nil {
+			return nil, err
+		}
+		models = append(models, m)
+	}
+	return models, rows.Err()
+}
+
 // ListModelsByChannel 按渠道列模型。
 func (s *Store) ListModelsByChannel(ctx context.Context, channelID int64) ([]Model, error) {
 	rows, err := s.db.QueryContext(ctx, `

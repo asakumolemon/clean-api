@@ -16,10 +16,26 @@ type modelView struct {
 	ChannelName string
 }
 
+// modelsPerPage 模型列表每页条数。
+const modelsPerPage = 20
+
 // modelsPage GET /admin/models
 func (s *Server) modelsPage(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	models, _ := s.store.ListModels(ctx)
+	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+	if page < 1 {
+		page = 1
+	}
+	total, _ := s.store.CountModels(ctx)
+	models, _ := s.store.ListModelsPage(ctx, modelsPerPage, (page-1)*modelsPerPage)
+	totalPages := (total + modelsPerPage - 1) / modelsPerPage
+	if totalPages == 0 {
+		totalPages = 1
+	}
+	if page > totalPages {
+		page = totalPages
+	}
+
 	chs, _ := s.store.ListChannels(ctx)
 	chName := map[int64]string{}
 	for _, ch := range chs {
@@ -30,9 +46,22 @@ func (s *Server) modelsPage(w http.ResponseWriter, r *http.Request) {
 		views = append(views, modelView{Model: m, ChannelName: chName[m.ChannelID]})
 	}
 	s.render(w, "models.html", baseData("模型管理 · 智能 API 网关", "models", map[string]any{
-		"Flash":  s.readFlash(w, r),
-		"Models": views,
+		"Flash":      s.readFlash(w, r),
+		"Models":     views,
+		"Page":       page,
+		"TotalPages": totalPages,
+		"Total":      total,
 	}))
+}
+
+// modelListRedirect 模型操作后回到列表页（保留分页页码）。
+func modelListRedirect(w http.ResponseWriter, r *http.Request) {
+	page := strings.TrimSpace(r.FormValue("page"))
+	if page != "" && page != "1" {
+		http.Redirect(w, r, "/admin/models?page="+page, http.StatusFound)
+		return
+	}
+	http.Redirect(w, r, "/admin/models", http.StatusFound)
 }
 
 // toggleModel POST /admin/models/{id}/toggle
@@ -51,7 +80,7 @@ func (s *Server) toggleModel(w http.ResponseWriter, r *http.Request) {
 	} else if err := s.store.SetModelEnabled(r.Context(), id, !cur.Enabled); err != nil {
 		s.setFlash(w, r, "操作失败: "+err.Error())
 	}
-	http.Redirect(w, r, "/admin/models", http.StatusFound)
+	modelListRedirect(w, r)
 }
 
 // setModelAlias POST /admin/models/{id}/alias
@@ -63,7 +92,7 @@ func (s *Server) setModelAlias(w http.ResponseWriter, r *http.Request) {
 	} else if alias != "" {
 		s.setFlash(w, r, "别名已设置："+alias)
 	}
-	http.Redirect(w, r, "/admin/models", http.StatusFound)
+	modelListRedirect(w, r)
 }
 
 // overrideModel POST /admin/models/{id}/override
@@ -84,7 +113,7 @@ func (s *Server) overrideModel(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(fields) == 0 {
 		s.setFlash(w, r, "请至少勾选一项能力")
-		http.Redirect(w, r, "/admin/models", http.StatusFound)
+		modelListRedirect(w, r)
 		return
 	}
 	if err := s.store.OverrideCapabilities(r.Context(), id, caps, fields); err != nil {
@@ -92,5 +121,5 @@ func (s *Server) overrideModel(w http.ResponseWriter, r *http.Request) {
 	} else {
 		s.setFlash(w, r, "能力已手动覆盖")
 	}
-	http.Redirect(w, r, "/admin/models", http.StatusFound)
+	modelListRedirect(w, r)
 }

@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
@@ -454,6 +455,81 @@ func TestLogout(t *testing.T) {
 	}
 	if loc := page.Header.Get("Location"); loc != "/admin/login" {
 		t.Fatalf("登出后应跳转 /admin/login，got %q", loc)
+	}
+}
+
+// 模型列表分页：每页 20 条；操作表单携带当前页，操作后仍回到该页。
+func TestModelsPagePagination(t *testing.T) {
+	up := fakeUpstream(t)
+	defer up.Close()
+	ts, st, client := newTestWeb(t, up)
+	ctx := context.Background()
+
+	chID, err := st.CreateChannel(ctx, "分页渠道", "openai", up.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = st.AddChannelKey(ctx, chID, "sk-test")
+	caps := map[string]store.Capabilities{}
+	for i := 0; i < 25; i++ {
+		caps[fmt.Sprintf("model-%02d", i)] = store.Capabilities{System: true}
+	}
+	if _, err := st.SyncModels(ctx, chID, caps, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+
+	get := func(qs string) string {
+		t.Helper()
+		page, err := client.Get(ts.URL + "/admin/models" + qs)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer page.Body.Close()
+		if page.StatusCode != http.StatusOK {
+			t.Fatalf("模型页应 200，got %d", page.StatusCode)
+		}
+		body := make([]byte, 2<<20)
+		n, _ := page.Body.Read(body)
+		return string(body[:n])
+	}
+
+	// 第 1 页：前 20 个，有「下一页」无「上一页」
+	html := get("")
+	for _, s := range []string{"共 25 个模型", "第 1 / 2 页", "model-00", "model-19", "下一页"} {
+		if !strings.Contains(html, s) {
+			t.Errorf("第 1 页应包含 %q", s)
+		}
+	}
+	for _, s := range []string{"model-20", "上一页"} {
+		if strings.Contains(html, s) {
+			t.Errorf("第 1 页不应包含 %q", s)
+		}
+	}
+
+	// 第 2 页：后 5 个，有「上一页」无「下一页」
+	html = get("?page=2")
+	for _, s := range []string{"第 2 / 2 页", "model-20", "model-24", "上一页", `name="page" value="2"`} {
+		if !strings.Contains(html, s) {
+			t.Errorf("第 2 页应包含 %q", s)
+		}
+	}
+	for _, s := range []string{"model-00", "下一页"} {
+		if strings.Contains(html, s) {
+			t.Errorf("第 2 页不应包含 %q", s)
+		}
+	}
+
+	// toggle 带 page=2 提交 → 重定向回 /admin/models?page=2（操作不丢页码）
+	resp, err := client.PostForm(ts.URL+"/admin/models/1/toggle", url.Values{"page": {"2"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusFound {
+		t.Fatalf("toggle 应 302，got %d", resp.StatusCode)
+	}
+	if loc := resp.Header.Get("Location"); loc != "/admin/models?page=2" {
+		t.Fatalf("toggle 后应跳回 /admin/models?page=2，got %q", loc)
 	}
 }
 
