@@ -569,6 +569,13 @@ func TestTokenCreateWithModelPicker(t *testing.T) {
 		}
 	}
 
+	// 弹窗内模型搜索框：输入框 + 行标记 + 无匹配空态 + 过滤逻辑
+	for _, s := range []string{`id="model-search"`, "model-row", "model-search-empty", "applySearch"} {
+		if !strings.Contains(html, s) {
+			t.Errorf("弹窗应包含搜索功能元素 %q", s)
+		}
+	}
+
 	// 多值提交 models（模拟弹窗勾选两个模型）
 	resp, err := client.PostForm(ts.URL+"/admin/tokens", url.Values{
 		"name":   {"multi"},

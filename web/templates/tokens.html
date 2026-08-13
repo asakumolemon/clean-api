@@ -104,15 +104,18 @@
         <div id="models-modal" class="fixed inset-0 z-50 hidden items-center justify-center bg-slate-900/50">
           <div class="w-full max-w-md rounded-lg bg-white p-6 shadow-xl">
             <h3 class="mb-4 text-lg font-semibold text-slate-900">选择模型白名单</h3>
+            <input id="model-search" type="text" placeholder="搜索模型…（过滤不影响已勾选）"
+              class="mb-3 w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200">
             <div class="max-h-80 space-y-1 overflow-y-auto pr-1">
               {{range .Models}}
-              <label class="flex cursor-pointer items-center gap-2 rounded-md px-3 py-2 text-sm text-slate-700 hover:bg-slate-50">
+              <label class="model-row flex cursor-pointer items-center gap-2 rounded-md px-3 py-2 text-sm text-slate-700 hover:bg-slate-50">
                 <input type="checkbox" name="models" value="{{.}}" class="model-checkbox h-4 w-4 accent-blue-600">
                 <span class="font-mono text-xs">{{.}}</span>
               </label>
               {{else}}
               <p class="px-3 py-2 text-sm text-slate-500">暂无可用模型</p>
               {{end}}
+              <p id="model-search-empty" class="hidden px-3 py-2 text-sm text-slate-500">无匹配模型</p>
             </div>
             <div class="mt-5 flex justify-end gap-3">
               <button type="button" id="modal-cancel"
@@ -199,9 +202,24 @@ function fallbackCopy(text) {
   const btn = document.getElementById('pick-models');
   const chips = document.getElementById('model-chips');
   const allowAll = document.getElementById('allow_all');
+  const search = document.getElementById('model-search');
+  const searchEmpty = document.getElementById('model-search-empty');
+  const modelRows = Array.from(document.querySelectorAll('.model-row'));
 
   function selected() {
     return Array.from(document.querySelectorAll('.model-checkbox:checked')).map(function (c) { return c.value; });
+  }
+  function applySearch() {
+    if (!search) return;
+    const q = search.value.trim().toLowerCase();
+    let shown = 0;
+    modelRows.forEach(function (row) {
+      const name = row.querySelector('.model-checkbox').value.toLowerCase();
+      const hit = q === '' || name.includes(q);
+      row.style.display = hit ? '' : 'none'; // 隐藏行已勾选仍随表单提交，不受过滤影响
+      if (hit) shown++;
+    });
+    if (searchEmpty) searchEmpty.style.display = shown > 0 ? 'none' : 'block'; // 覆盖模板 hidden 类
   }
   function renderChips() {
     chips.innerHTML = '';
@@ -224,7 +242,9 @@ function fallbackCopy(text) {
   document.getElementById('modal-cancel').addEventListener('click', close);
   document.getElementById('modal-ok').addEventListener('click', function () { renderChips(); close(); });
   allowAll.addEventListener('change', renderChips);
+  if (search) search.addEventListener('input', applySearch);
   renderChips();
+  applySearch();
 })();
 </script>
 </body>
