@@ -109,6 +109,40 @@ func (s *Store) ListModelsPage(ctx context.Context, limit, offset int) ([]Model,
 	return models, rows.Err()
 }
 
+// ListModelsPageFiltered 分页查询模型（管理页列表用），按模型名/别名/渠道名模糊过滤，
+// 排序与 ListModels 一致。
+func (s *Store) ListModelsPageFiltered(ctx context.Context, q string, limit, offset int) ([]Model, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT m.id, m.channel_id, m.name, m.enabled, COALESCE(m.alias,''), m.capabilities, COALESCE(m.capability_override,''), m.last_sync_at
+		FROM models m JOIN channels c ON c.id = m.channel_id
+		WHERE m.name LIKE ? OR COALESCE(m.alias,'') LIKE ? OR c.name LIKE ?
+		ORDER BY m.channel_id, m.name LIMIT ? OFFSET ?`,
+		"%"+q+"%", "%"+q+"%", "%"+q+"%", limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	models := []Model{}
+	for rows.Next() {
+		var m Model
+		if err := scanModelRow(rows, &m); err != nil {
+			return nil, err
+		}
+		models = append(models, m)
+	}
+	return models, rows.Err()
+}
+
+// CountModelsFiltered 统计模糊过滤后的模型数（分页用，条件与 ListModelsPageFiltered 一致）。
+func (s *Store) CountModelsFiltered(ctx context.Context, q string) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM models m JOIN channels c ON c.id = m.channel_id
+		WHERE m.name LIKE ? OR COALESCE(m.alias,'') LIKE ? OR c.name LIKE ?`,
+		"%"+q+"%", "%"+q+"%", "%"+q+"%").Scan(&n)
+	return n, err
+}
+
 // ListModelsByChannel 按渠道列模型。
 func (s *Store) ListModelsByChannel(ctx context.Context, channelID int64) ([]Model, error) {
 	rows, err := s.db.QueryContext(ctx, `

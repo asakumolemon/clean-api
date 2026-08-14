@@ -865,6 +865,179 @@ func slicesEqual(a, b []string) bool {
 	return true
 }
 
+// 模型页搜索：按模型名/别名/渠道名模糊过滤，分页总数按过滤后统计，操作后保留搜索词。
+func TestModelsPageSearch(t *testing.T) {
+	up := fakeUpstream(t)
+	defer up.Close()
+	ts, st, client := newTestWeb(t, up)
+	ctx := context.Background()
+
+	chA, err := st.CreateChannel(ctx, "渠道甲", "openai", up.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chB, err := st.CreateChannel(ctx, "渠道乙", "openai", up.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if _, err := st.SyncModels(ctx, chA, map[string]store.Capabilities{
+		"gpt-4o": {}, "gpt-4o-mini": {},
+	}, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.SyncModels(ctx, chB, map[string]store.Capabilities{
+		"claude-3": {},
+	}, now); err != nil {
+		t.Fatal(err)
+	}
+	// gpt-4o 设别名，验证别名可搜索
+	gm, err := st.GetModel(ctx, chA, "gpt-4o")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetModelAlias(ctx, gm.ID, "zhipu-gpt"); err != nil {
+		t.Fatal(err)
+	}
+
+	get := func(path string) string {
+		t.Helper()
+		resp, err := client.Get(ts.URL + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		body := make([]byte, 2<<20)
+		n, _ := resp.Body.Read(body)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("GET %s 应 200，got %d", path, resp.StatusCode)
+		}
+		return string(body[:n])
+	}
+
+	// 按模型名命中：gpt 开头的两个，不含 claude-3
+	html := get("/admin/models?q=gpt")
+	for _, s := range []string{"gpt-4o", "gpt-4o-mini", "共 2 个模型", "搜索「gpt」"} {
+		if !strings.Contains(html, s) {
+			t.Errorf("q=gpt 应包含 %q", s)
+		}
+	}
+	if strings.Contains(html, "claude-3") {
+		t.Error("q=gpt 不应包含 claude-3")
+	}
+	// 按渠道名命中
+	html = get("/admin/models?q=" + url.QueryEscape("渠道乙"))
+	if !strings.Contains(html, "claude-3") {
+		t.Error("q=渠道乙 应命中 claude-3（渠道名过滤）")
+	}
+	// 按别名命中
+	html = get("/admin/models?q=zhipu")
+	if !strings.Contains(html, "gpt-4o") || !strings.Contains(html, "zhipu-gpt") {
+		t.Error("q=zhipu 应命中 gpt-4o（别名过滤）")
+	}
+	// 无匹配
+	html = get("/admin/models?q=not-exist")
+	if !strings.Contains(html, "无匹配模型") {
+		t.Error("q=not-exist 应显示无匹配模型空态")
+	}
+
+	// 操作后保留搜索词：toggle 模型后回 /admin/models?q=...
+	resp, err := client.PostForm(ts.URL+"/admin/models/"+itoa64(gm.ID)+"/toggle",
+		url.Values{"q": {"gpt"}, "page": {"1"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if loc := resp.Header.Get("Location"); loc != "/admin/models?q=gpt" {
+		t.Fatalf("toggle 后应回 /admin/models?q=gpt，got %q", loc)
+	}
+}
+
+// 令牌编辑白名单：弹窗提交 POST /admin/tokens/{id}/whitelist 更新白名单与 allow_all。
+func TestTokenEditWhitelist(t *testing.T) {
+	up := fakeUpstream(t)
+	defer up.Close()
+	ts, st, client := newTestWeb(t, up)
+	ctx := context.Background()
+
+	chID, err := st.CreateChannel(ctx, "测试渠道", "openai", up.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = st.AddChannelKey(ctx, chID, "sk-test")
+	if _, err := st.SyncModels(ctx, chID, map[string]store.Capabilities{
+		"model-a": {}, "model-b": {}, "model-c": {},
+	}, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	admin, err := st.GetUserByUsername(ctx, "admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tid, err := st.CreateToken(ctx, admin.ID, "测试令牌", auth.HashToken("plain-secret"),
+		[]string{"model-a", "model-b"}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 令牌页应包含编辑入口与弹窗
+	resp, err := client.Get(ts.URL + "/admin/tokens")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := make([]byte, 2<<20)
+	n, _ := resp.Body.Read(body)
+	resp.Body.Close()
+	html := string(body[:n])
+	for _, s := range []string{"编辑模型", "edit-models-modal", "edit-form", "openEditModal", "模型已不在可用列表（被禁用或删除）"} {
+		if !strings.Contains(html, s) {
+			t.Errorf("令牌页应包含编辑白名单元素 %q", s)
+		}
+	}
+
+	// 更新白名单为 model-b/model-c
+	edit := func(models []string, allowAll bool) string {
+		t.Helper()
+		vals := url.Values{}
+		if len(models) > 0 {
+			vals["models"] = models
+		}
+		if allowAll {
+			vals.Set("allow_all", "on")
+		}
+		r, err := client.PostForm(ts.URL+"/admin/tokens/"+itoa64(tid)+"/whitelist", vals)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.Body.Close()
+		return r.Header.Get("Location")
+	}
+	if loc := edit([]string{"model-b", "model-c"}, false); loc != "/admin/tokens" {
+		t.Fatalf("保存白名单应 302 /admin/tokens，got %q", loc)
+	}
+	tok, err := st.GetTokenByID(ctx, tid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slicesEqual(tok.ModelWhitelist, []string{"model-b", "model-c"}) || tok.AllowAll {
+		t.Errorf("白名单应为 [model-b model-c]，got %+v", tok)
+	}
+
+	// 空白名单且未勾选允许全部 → 拒绝且不改变原白名单
+	edit(nil, false)
+	tok, _ = st.GetTokenByID(ctx, tid)
+	if !slicesEqual(tok.ModelWhitelist, []string{"model-b", "model-c"}) {
+		t.Errorf("非法提交不应改变白名单，got %+v", tok.ModelWhitelist)
+	}
+
+	// 显式勾选允许全部 → AllowAll 生效
+	edit(nil, true)
+	tok, _ = st.GetTokenByID(ctx, tid)
+	if !tok.AllowAll || len(tok.ModelWhitelist) != 0 {
+		t.Errorf("勾选允许全部后应 AllowAll=true 且清空白名单，got %+v", tok)
+	}
+}
+
 func itoa64(id int64) string {
 	return strconv.FormatInt(id, 10)
 }

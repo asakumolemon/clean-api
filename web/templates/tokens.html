@@ -188,6 +188,29 @@ API Key：{{.NewToken}}
       </form>
     </div>
 
+    <!-- 编辑白名单弹窗：独立表单（不在新建表单内，避免 checkbox 随新建表单提交）。
+         模型行从新建弹窗复制（clone），按令牌当前白名单预勾选。 -->
+    <div id="edit-models-modal" class="fixed inset-0 z-50 hidden items-center justify-center bg-slate-900/50">
+      <div class="w-full max-w-lg rounded-lg bg-white p-6 shadow-xl">
+        <h3 class="mb-4 text-lg font-semibold text-slate-900">编辑模型白名单</h3>
+        <input id="edit-model-search" type="text" placeholder="搜索模型…"
+          class="mb-3 w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200">
+        <div id="edit-model-list" class="max-h-80 space-y-1 overflow-y-auto pr-1"></div>
+        <form id="edit-form" method="post" action="">
+          <label class="mt-3 flex items-center gap-2 text-sm text-slate-700">
+            <input id="edit-allow-all" name="allow_all" type="checkbox" class="h-4 w-4 accent-blue-600">
+            允许全部模型（必须显式勾选才生效）
+          </label>
+          <div class="mt-5 flex justify-end gap-3">
+            <button type="button" id="edit-modal-cancel"
+              class="rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100">取消</button>
+            <button type="submit"
+              class="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700">保存</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
     <div class="overflow-x-auto rounded-lg border border-slate-200 bg-white shadow-sm">
       <table class="w-full text-sm">
         <thead>
@@ -209,6 +232,8 @@ API Key：{{.NewToken}}
             <td class="px-4 py-3">{{if .Enabled}}启用{{else}}禁用{{end}}</td>
             <td class="px-4 py-3">{{if .LastUsedAt.Valid}}{{.LastUsedAt.Time.Format "2006-01-02 15:04"}}{{else}}-{{end}}</td>
             <td class="px-4 py-3 whitespace-nowrap">
+              <button type="button" onclick='openEditModal({{.ID}}, {{.WhitelistJSON}}, {{if .AllowAll}}true{{else}}false{{end}})'
+                class="mr-1 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100">编辑模型</button>
               <form method="post" action="/admin/tokens/{{.ID}}/toggle" class="mr-1 inline">
                 <button type="submit"
                   class="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100">{{if .Enabled}}禁用{{else}}启用{{end}}</button>
@@ -266,10 +291,11 @@ function fallbackCopy(text) {
   const searchEmpty = document.getElementById('model-search-empty');
   const onlyAvail = document.getElementById('only-available');
   const capFilters = Array.from(document.querySelectorAll('.cap-filter'));
-  const modelRows = Array.from(document.querySelectorAll('.model-row'));
+  const modelRows = Array.from(document.querySelectorAll('#models-modal .model-row'));
 
   function selected() {
-    return Array.from(document.querySelectorAll('.model-checkbox:checked')).map(function (c) { return c.value; });
+    // 只统计新建弹窗内的勾选，编辑弹窗复制的行不在其列
+    return Array.from(document.querySelectorAll('#models-modal .model-checkbox:checked')).map(function (c) { return c.value; });
   }
   // 搜索文本 + 只看有可用渠道 + 能力筛选 三者叠加；隐藏行已勾选仍随表单提交，不受过滤影响。
   function applySearch() {
@@ -316,6 +342,70 @@ function fallbackCopy(text) {
   capFilters.forEach(function (c) { c.addEventListener('change', applySearch); });
   renderChips();
   applySearch();
+
+  // 编辑白名单弹窗：模型行从新建弹窗复制（cloneNode，checkbox 结构一致），
+  // 按令牌当前白名单预勾选；提交走独立表单 POST /admin/tokens/{id}/whitelist。
+  const editModal = document.getElementById('edit-models-modal');
+  const editList = document.getElementById('edit-model-list');
+  const editForm = document.getElementById('edit-form');
+  const editAllowAll = document.getElementById('edit-allow-all');
+  const editSearch = document.getElementById('edit-model-search');
+  let editingRows = [];
+  function openEditModal(tokenId, whitelist, allowAll) {
+    const srcRows = document.querySelectorAll('#models-modal .model-row');
+    editList.innerHTML = '';
+    srcRows.forEach(function (row) { editList.appendChild(row.cloneNode(true)); });
+    editingRows = Array.from(editList.querySelectorAll('.model-row'));
+    // 白名单中已不在候选列表（模型被禁用/删除）的项动态追加一行并标注，
+    // 避免编辑保存时静默丢弃白名单项。
+    const existing = {};
+    editingRows.forEach(function (row) { existing[row.querySelector('.model-checkbox').value] = true; });
+    whitelist.forEach(function (m) {
+      if (existing[m]) return;
+      const row = document.createElement('label');
+      row.className = 'model-row flex cursor-pointer items-start gap-2 rounded-md px-3 py-2 text-sm text-slate-700 hover:bg-slate-50';
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.className = 'model-checkbox mt-1 h-4 w-4 accent-blue-600';
+      cb.value = m;
+      const name = document.createElement('span');
+      name.className = 'block truncate font-mono text-xs';
+      name.textContent = m;
+      const note = document.createElement('span');
+      note.className = 'block text-xs text-red-500';
+      note.textContent = '模型已不在可用列表（被禁用或删除）';
+      const body = document.createElement('span');
+      body.className = 'min-w-0 flex-1';
+      body.appendChild(name);
+      body.appendChild(note);
+      row.appendChild(cb);
+      row.appendChild(body);
+      editList.appendChild(row);
+      editingRows.push(row);
+    });
+    const set = {};
+    whitelist.forEach(function (m) { set[m] = true; });
+    editingRows.forEach(function (row) {
+      row.querySelector('.model-checkbox').checked = !!set[row.querySelector('.model-checkbox').value];
+    });
+    editAllowAll.checked = allowAll;
+    editForm.action = '/admin/tokens/' + tokenId + '/whitelist';
+    if (editSearch) editSearch.value = '';
+    editingRows.forEach(function (row) { row.style.display = ''; }); // 清掉上次搜索过滤
+    editModal.classList.remove('hidden');
+    editModal.classList.add('flex');
+  }
+  document.getElementById('edit-modal-cancel').addEventListener('click', function () {
+    editModal.classList.add('hidden');
+    editModal.classList.remove('flex');
+  });
+  if (editSearch) editSearch.addEventListener('input', function () {
+    const q = editSearch.value.trim().toLowerCase();
+    editingRows.forEach(function (row) {
+      const name = row.querySelector('.model-checkbox').value.toLowerCase();
+      row.style.display = (!q || name.includes(q)) ? '' : 'none';
+    });
+  });
 })();
 </script>
 </body>

@@ -2,6 +2,7 @@ package web
 
 import (
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -20,14 +21,23 @@ type modelView struct {
 const modelsPerPage = 20
 
 // modelsPage GET /admin/models
+// 支持 ?q= 按模型名/别名/渠道名模糊搜索（与分页叠加）。
 func (s *Server) modelsPage(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
 	if page < 1 {
 		page = 1
 	}
-	total, _ := s.store.CountModels(ctx)
-	models, _ := s.store.ListModelsPage(ctx, modelsPerPage, (page-1)*modelsPerPage)
+	q := strings.TrimSpace(r.URL.Query().Get("q"))
+	var total int
+	var models []store.Model
+	if q == "" {
+		total, _ = s.store.CountModels(ctx)
+		models, _ = s.store.ListModelsPage(ctx, modelsPerPage, (page-1)*modelsPerPage)
+	} else {
+		total, _ = s.store.CountModelsFiltered(ctx, q)
+		models, _ = s.store.ListModelsPageFiltered(ctx, q, modelsPerPage, (page-1)*modelsPerPage)
+	}
 	totalPages := (total + modelsPerPage - 1) / modelsPerPage
 	if totalPages == 0 {
 		totalPages = 1
@@ -51,17 +61,24 @@ func (s *Server) modelsPage(w http.ResponseWriter, r *http.Request) {
 		"Page":       page,
 		"TotalPages": totalPages,
 		"Total":      total,
+		"Q":          q,
 	}))
 }
 
-// modelListRedirect 模型操作后回到列表页（保留分页页码）。
+// modelListRedirect 模型操作后回到列表页（保留分页页码与搜索词）。
 func modelListRedirect(w http.ResponseWriter, r *http.Request) {
+	q := strings.TrimSpace(r.FormValue("q"))
 	page := strings.TrimSpace(r.FormValue("page"))
-	if page != "" && page != "1" {
-		http.Redirect(w, r, "/admin/models?page="+page, http.StatusFound)
-		return
+	loc := "/admin/models"
+	if q != "" {
+		loc += "?q=" + url.QueryEscape(q)
+		if page != "" && page != "1" {
+			loc += "&page=" + page
+		}
+	} else if page != "" && page != "1" {
+		loc += "?page=" + page
 	}
-	http.Redirect(w, r, "/admin/models", http.StatusFound)
+	http.Redirect(w, r, loc, http.StatusFound)
 }
 
 // toggleModel POST /admin/models/{id}/toggle

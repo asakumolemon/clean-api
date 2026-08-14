@@ -49,6 +49,8 @@
 - **一键建令牌（方案 A）**：模型管理页每行「建令牌」按钮 → POST `/admin/tokens` 带 `model` 参数（对外名，alias 优先）；`createToken` 无 `models` 时以 `model` 预填白名单、名称为空自动命名「X 令牌」。**必须同响应 render 展示明文**（不能 302，否则令牌明文丢失——现有 `NewToken` 区块即该模式）。
 - **按客户端一键复制（方案 C）**：生成令牌后展示块从单一 curl 扩展为四项：OpenAI Chat curl、Anthropic Messages curl（x-api-key + anthropic-version）、Claude Code 三环境变量 shell、NextChat 三要素，各带独立复制按钮（复用 `copyText`，id 唯一）。
 - **测试台下拉去重**：`renderPlayground` 按对外名去重（此前多渠道同模型会重复出现）。
+- **模型页搜索**：`modelsPage` 支持 `?q=` 按模型名/别名/渠道名模糊过滤（store 新增 `ListModelsPageFiltered`/`CountModelsFiltered`，JOIN channels 过滤渠道名，排序与 `ListModelsPage` 一致）；搜索与分页叠加，分页链接与操作表单（alias/override/toggle）均带 hidden `q`，`modelListRedirect` 保留搜索词；空结果显示「无匹配模型」。
+- **令牌编辑白名单**：令牌列表每行「编辑模型」按钮 → 独立编辑弹窗（`#edit-models-modal`，模型行从新建弹窗 cloneNode 复制、按 `WhitelistJSON` 预勾选，`tokenView` 包装 `WhitelistJSON` 字段）→ POST `/admin/tokens/{id}/whitelist`（`updateTokenWhitelist`，复用与创建一致的校验：空白名单必须显式勾选 allow_all）→ store `UpdateTokenWhitelist`（M5 已有）。编辑弹窗的 checkbox 在独立表单内，避免随新建表单提交；新建弹窗的 `applySearch`/`selected` 选择器限定 `#models-modal` 作用域防止互相干扰。白名单中不在弹窗候选（模型被禁用/删除）的项由 JS 动态追加一行并标注「模型已不在可用列表」，避免编辑保存时静默丢弃。
 
 ## M2 关键决策
 

@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"sort"
 	"strconv"
@@ -107,10 +108,33 @@ func (s *Server) tokensPage(w http.ResponseWriter, r *http.Request) {
 	tokens, _ := s.store.ListTokens(ctx)
 	s.render(w, r, "tokens.html", baseData("令牌管理 · 智能 API 网关", "tokens", map[string]any{
 		"Flash":   s.readFlash(w, r),
-		"Tokens":  tokens,
+		"Tokens":  tokenViews(tokens),
 		"Models":  modelOptions(ctx, s.store),
 		"BaseURL": baseURL(r),
 	}))
+}
+
+// tokenView 令牌行视图（附白名单 JSON，供编辑弹窗预勾选）。
+type tokenView struct {
+	store.Token
+	WhitelistJSON string
+}
+
+// tokenViews 转换令牌列表为视图，序列化白名单 JSON。
+func tokenViews(tokens []store.Token) []tokenView {
+	views := make([]tokenView, 0, len(tokens))
+	for _, t := range tokens {
+		views = append(views, tokenView{Token: t, WhitelistJSON: tokenWhitelistJSON(t)})
+	}
+	return views
+}
+
+func tokenWhitelistJSON(t store.Token) string {
+	b, err := json.Marshal(t.ModelWhitelist)
+	if err != nil {
+		return "[]"
+	}
+	return string(b)
 }
 
 // createToken POST /admin/tokens
@@ -159,7 +183,7 @@ func (s *Server) createToken(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	tokens, _ := s.store.ListTokens(ctx)
 	s.render(w, r, "tokens.html", baseData("令牌管理 · 智能 API 网关", "tokens", map[string]any{
-		"Tokens":   tokens,
+		"Tokens":   tokenViews(tokens),
 		"NewToken": plain,
 		"Models":   modelOptions(ctx, s.store),
 		"BaseURL":  baseURL(r),
@@ -231,6 +255,32 @@ func modelOptions(ctx context.Context, st *store.Store) []modelOption {
 		out = append(out, *byName[n])
 	}
 	return out
+}
+
+// updateTokenWhitelist POST /admin/tokens/{id}/whitelist：编辑令牌模型白名单（弹窗多选提交）。
+func (s *Server) updateTokenWhitelist(w http.ResponseWriter, r *http.Request) {
+	id, _ := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if _, err := s.store.GetTokenByID(r.Context(), id); err != nil {
+		s.setFlash(w, r, "令牌不存在")
+		http.Redirect(w, r, "/admin/tokens", http.StatusFound)
+		return
+	}
+	allowAll := r.FormValue("allow_all") == "on"
+	var models []string
+	for _, v := range r.Form["models"] {
+		models = append(models, splitModels(v)...)
+	}
+	if !allowAll && len(models) == 0 {
+		s.setFlash(w, r, "必须指定至少一个模型；如需放行全部模型请显式勾选「允许全部模型」")
+		http.Redirect(w, r, "/admin/tokens", http.StatusFound)
+		return
+	}
+	if err := s.store.UpdateTokenWhitelist(r.Context(), id, models, allowAll); err != nil {
+		s.setFlash(w, r, "保存白名单失败: "+err.Error())
+	} else {
+		s.setFlash(w, r, "模型白名单已更新")
+	}
+	http.Redirect(w, r, "/admin/tokens", http.StatusFound)
 }
 
 // toggleToken POST /admin/tokens/{id}/toggle

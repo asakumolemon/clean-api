@@ -6,6 +6,14 @@
     <p class="mb-6 text-sm text-slate-500">模型列表由渠道自动探测同步。能力标签为最小试调用结果，可手动覆盖；别名用于对外改名。</p>
     {{template "flash" .}}
 
+    <form method="get" action="/admin/models" class="mb-4 flex items-center gap-2">
+      <input name="q" type="text" value="{{.Q}}" placeholder="搜索模型名 / 别名 / 渠道名…"
+        class="w-72 rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200">
+      <button type="submit"
+        class="rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100">搜索</button>
+      {{if .Q}}<a href="/admin/models" class="text-sm text-blue-600 hover:underline">清除搜索</a>{{end}}
+    </form>
+
     <div class="overflow-x-auto rounded-lg border border-slate-200 bg-white shadow-sm">
       <table class="w-full text-sm">
         <thead>
@@ -26,6 +34,7 @@
             <td class="px-4 py-3">
               <form method="post" action="/admin/models/{{.ID}}/alias" class="flex gap-2">
                 <input type="hidden" name="page" value="{{$.Page}}">
+                <input type="hidden" name="q" value="{{$.Q}}">
                 <input name="alias" type="text" value="{{.Alias}}" placeholder="对外别名"
                   class="w-32 rounded-md border border-slate-300 px-2 py-1.5 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200">
                 <button type="submit"
@@ -44,6 +53,7 @@
                 <div class="absolute mt-2 rounded-md border border-slate-200 bg-white p-4 shadow-lg">
                   <form method="post" action="/admin/models/{{.ID}}/override" class="space-y-2">
                     <input type="hidden" name="page" value="{{$.Page}}">
+                    <input type="hidden" name="q" value="{{$.Q}}">
                     <label class="flex items-center gap-2 text-sm text-slate-700"><input type="checkbox" name="system"
                       class="h-4 w-4 accent-blue-600"> system</label>
                     <label class="flex items-center gap-2 text-sm text-slate-700"><input type="checkbox" name="tools"
@@ -59,6 +69,7 @@
               </details>
               <form method="post" action="/admin/models/{{.ID}}/toggle" class="inline">
                 <input type="hidden" name="page" value="{{$.Page}}">
+                <input type="hidden" name="q" value="{{$.Q}}">
                 <button type="submit"
                   class="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100">{{if .Enabled}}禁用{{else}}启用{{end}}</button>
               </form>
@@ -71,24 +82,24 @@
             </td>
           </tr>
           {{else}}
-          <tr><td colspan="6" class="px-4 py-8 text-center text-slate-500">暂无模型，先到「渠道管理」添加渠道并等待探测完成</td></tr>
+          <tr><td colspan="6" class="px-4 py-8 text-center text-slate-500">{{if .Q}}无匹配模型，换个关键词试试{{else}}暂无模型，先到「渠道管理」添加渠道并等待探测完成{{end}}</td></tr>
           {{end}}
         </tbody>
       </table>
     </div>
 
-    <p class="mt-4 text-sm text-slate-500">共 {{.Total}} 个模型</p>
+    <p class="mt-4 text-sm text-slate-500">共 {{.Total}} 个模型{{if .Q}}（搜索「{{.Q}}」）{{end}}</p>
     <div class="mt-2 grid grid-cols-1 items-center gap-4 md:grid-cols-3">
       <div>
         {{if gt .Page 1}}
-        <a href="/admin/models?page={{sub .Page 1}}"
+        <a href="/admin/models?page={{sub .Page 1}}{{if .Q}}&q={{.Q}}{{end}}"
           class="inline-block rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100">上一页</a>
         {{end}}
       </div>
       <div class="text-center text-sm text-slate-500">第 {{.Page}} / {{.TotalPages}} 页</div>
       <div class="text-right">
         {{if lt .Page .TotalPages}}
-        <a href="/admin/models?page={{add .Page 1}}"
+        <a href="/admin/models?page={{add .Page 1}}{{if .Q}}&q={{.Q}}{{end}}"
           class="inline-block rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100">下一页</a>
         {{end}}
       </div>

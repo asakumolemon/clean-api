@@ -64,6 +64,7 @@ func (s *Server) Mount(r chi.Router) {
 			r.Get("/tokens", s.tokensPage)
 			r.Post("/tokens", s.createToken)
 			r.Post("/tokens/{id}/toggle", s.toggleToken)
+			r.Post("/tokens/{id}/whitelist", s.updateTokenWhitelist)
 			r.Post("/tokens/{id}/revoke", s.revokeToken)
 			r.Get("/channels", s.channelsPage)
 			r.Post("/channels", s.createChannel)
