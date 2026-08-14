@@ -52,6 +52,16 @@
 - **模型页搜索**：`modelsPage` 支持 `?q=` 按模型名/别名/渠道名模糊过滤（store 新增 `ListModelsPageFiltered`/`CountModelsFiltered`，JOIN channels 过滤渠道名，排序与 `ListModelsPage` 一致）；搜索与分页叠加，分页链接与操作表单（alias/override/toggle）均带 hidden `q`，`modelListRedirect` 保留搜索词；空结果显示「无匹配模型」。
 - **令牌编辑白名单**：令牌列表每行「编辑模型」按钮 → 独立编辑弹窗（`#edit-models-modal`，模型行从新建弹窗 cloneNode 复制、按 `WhitelistJSON` 预勾选，`tokenView` 包装 `WhitelistJSON` 字段）→ POST `/admin/tokens/{id}/whitelist`（`updateTokenWhitelist`，复用与创建一致的校验：空白名单必须显式勾选 allow_all）→ store `UpdateTokenWhitelist`（M5 已有）。编辑弹窗的 checkbox 在独立表单内，避免随新建表单提交；新建弹窗的 `applySearch`/`selected` 选择器限定 `#models-modal` 作用域防止互相干扰。白名单中不在弹窗候选（模型被禁用/删除）的项由 JS 动态追加一行并标注「模型已不在可用列表」，避免编辑保存时静默丢弃。
 
+## 响应缓存与命中率（M7 后）
+
+- **范围**：仅缓存**非流式**成功响应（`stream=false`），流式不缓存（记未命中）。命中直接返回缓存响应、**不调上游**，省上游调用；`model_redirects` 为静态映射，同一对外名恒映射同一实际名，用对外名+请求体作 key 安全。
+- **介质**：进程内存 + TTL（`cache_ttl_seconds` 默认 300，`cache_enabled` 默认开、可关；`internal/cache` 新包，`sync.Mutex` + map，`maxEntries=5000` 防内存膨胀：超限先清过期，仍超则拒写）。**命中率统计不靠缓存自身计数**——每请求的命中与否写进请求日志，持久化到 SQLite，重启不丢。
+- **key**：`sha256(tokenID + 原始请求体)`——按令牌隔离（不同令牌不共享缓存）、参数全量入键；白名单校验在缓存查询**之前**（命中路径不绕过鉴权语义）。
+- **命中路径**：`handle` 流水线白名单/空对话校验后、流式分流前查缓存；命中 → 出口序列化（与正常路径同函数）→ 200，日志 `cache_hit=1`、`channel_id=0`（未调上游）、tokens 用缓存 usage；未命中 → 正常路由，`handleNonStream` 成功后写缓存（只缓存成功）。
+- **落库**：`request_logs` 新增 `cache_hit INTEGER DEFAULT 0`——新库建表直接带列；**老库 `migrate()` 里 `ensureColumn`（PRAGMA table_info 检测 + ALTER TABLE ADD COLUMN，幂等）补列，项目首个 ALTER 先例**。`LogUsageStats` 每行加 `CacheHits`（SUM），新增 `CountCacheHits(filter)`（复用 `logFilterWhere`）。
+- **展示**：日志页汇总卡片「缓存命中率 X%（N 次命中）」+ 按天×模型明细表「缓存命中 N/M」列（随现有筛选联动）；仪表盘第 5 张卡片。命中率 = 命中数/请求数，无请求显示 `-`。
+- **配置**：`cache_enabled` 用 `*bool`（区分「未设置→默认 true」与「显式 false」）；`GATEWAY_CACHE_ENABLED`/`GATEWAY_CACHE_TTL_SECONDS` 环境变量。
+
 ## M2 关键决策
 
 - 渠道 `type`：创建时默认 `auto`（自动探测）；探测成功后写回实际类型；失败保留 auto 供手动指定类型重试（编辑时改类型/base_url 自动触发重探测）。

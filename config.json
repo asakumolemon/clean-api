@@ -13,5 +13,7 @@
   "health_check_max_failures": 3,
   "key_cooldown_seconds": 60,
   "probe_capabilities": false,
-  "model_redirects": {}
+  "model_redirects": {},
+  "cache_enabled": true,
+  "cache_ttl_seconds": 300
 }

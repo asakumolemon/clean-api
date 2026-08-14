@@ -60,10 +60,14 @@
         <h2 class="text-lg font-semibold text-slate-900">Token 消耗统计</h2>
         <span class="text-sm text-slate-400">按天 × 模型分组，与当前筛选一致（含日期范围）</span>
       </div>
-      <div class="mb-6 grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
+      <div class="mb-6 grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-5">
         <div class="rounded-lg border border-slate-200 bg-slate-50 p-5">
           <p class="text-2xl font-bold text-slate-900">{{.StatsRequests}}</p>
           <p class="text-sm text-slate-500">请求数</p>
+        </div>
+        <div class="rounded-lg border border-slate-200 bg-slate-50 p-5">
+          <p class="text-2xl font-bold text-slate-900">{{.HitRate}}</p>
+          <p class="text-sm text-slate-500">缓存命中率（{{.StatsHits}} 次命中）</p>
         </div>
         <div class="rounded-lg border border-slate-200 bg-slate-50 p-5">
           <p class="text-2xl font-bold text-slate-900">{{.StatsPrompt}}</p>
@@ -85,6 +89,7 @@
               <th class="px-4 py-3 font-medium">日期</th>
               <th class="px-4 py-3 font-medium">模型</th>
               <th class="px-4 py-3 font-medium">请求数</th>
+              <th class="px-4 py-3 font-medium">缓存命中</th>
               <th class="px-4 py-3 font-medium">输入 Tokens</th>
               <th class="px-4 py-3 font-medium">输出 Tokens</th>
               <th class="px-4 py-3 font-medium">总 Tokens</th>
@@ -96,12 +101,13 @@
               <td class="px-4 py-3 font-mono text-xs whitespace-nowrap">{{.Day}}</td>
               <td class="px-4 py-3">{{.Model}}</td>
               <td class="px-4 py-3">{{.Requests}}</td>
+              <td class="px-4 py-3">{{.CacheHits}}/{{.Requests}}</td>
               <td class="px-4 py-3">{{.PromptTokens}}</td>
               <td class="px-4 py-3">{{.CompletionTokens}}</td>
               <td class="px-4 py-3">{{.TotalTokens}}</td>
             </tr>
             {{else}}
-            <tr><td colspan="6" class="px-4 py-8 text-center text-slate-500">当前筛选范围内暂无用量数据</td></tr>
+            <tr><td colspan="7" class="px-4 py-8 text-center text-slate-500">当前筛选范围内暂无用量数据</td></tr>
             {{end}}
           </tbody>
         </table>

@@ -14,12 +14,18 @@ import (
 	"time"
 
 	"api-gateway/internal/auth"
+	"api-gateway/internal/cache"
 	"api-gateway/internal/channel"
 	"api-gateway/internal/router"
 	"api-gateway/internal/store"
 )
 
 func newTestSrv(t *testing.T) (*Server, *store.Store, *auth.SessionManager) {
+	return newTestSrvCache(t, 300*time.Second)
+}
+
+// newTestSrvCache 带可配置缓存 TTL 的测试服务（响应缓存过期场景用）。
+func newTestSrvCache(t *testing.T, ttl time.Duration) (*Server, *store.Store, *auth.SessionManager) {
 	t.Helper()
 	s, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
@@ -32,7 +38,7 @@ func newTestSrv(t *testing.T) (*Server, *store.Store, *auth.SessionManager) {
 	}
 	chm := channel.NewManager(s, nil, 5*time.Second) // enc=nil → key 明文
 	rt := router.New(s, chm, "random", 5*time.Second, nil)
-	return New(s, rt), s, am
+	return New(s, rt, cache.New(true, ttl)), s, am
 }
 
 func doChat(t *testing.T, srv *Server, am *auth.SessionManager, s *store.Store, token, body string) *httptest.ResponseRecorder {
@@ -1044,4 +1050,130 @@ func addTestChannelReturnID(t *testing.T, s *store.Store, baseURL string) int64 
 		t.Fatal(err)
 	}
 	return chID
+}
+
+// 响应缓存：相同非流式请求命中（响应一致、不再调上游）、按令牌隔离、不同 body 不命中、
+// TTL 过期失效；命中请求日志标记 cache_hit=1 且 channel_id=0（未调上游），tokens 用缓存 usage。
+func TestResponseCache(t *testing.T) {
+	srv, st, am := newTestSrvCache(t, 80*time.Millisecond)
+	ctx := context.Background()
+
+	var calls atomic.Int64
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"chatcmpl-1","created":1700000000,"model":"deepseek-chat","choices":[{"index":0,"message":{"role":"assistant","content":"你好"},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":3,"total_tokens":8}}`)
+	}))
+	t.Cleanup(upstream.Close)
+
+	uid, _ := st.CreateUser(ctx, "admin", "hash", "admin")
+	plainA := "token-a"
+	plainB := "token-b"
+	_, _ = st.CreateToken(ctx, uid, "ta", auth.HashToken(plainA), []string{"deepseek-chat"}, false)
+	_, _ = st.CreateToken(ctx, uid, "tb", auth.HashToken(plainB), []string{"deepseek-chat"}, false)
+	chID := addTestChannelReturnID(t, st, upstream.URL)
+
+	bodyA := `{"model":"deepseek-chat","messages":[{"role":"user","content":"你好"}]}`
+	bodyB := `{"model":"deepseek-chat","messages":[{"role":"user","content":"再见"}]}`
+
+	// 首次：未命中，调上游
+	rec1 := doChat(t, srv, am, st, plainA, bodyA)
+	if rec1.Code != http.StatusOK {
+		t.Fatalf("首次请求应 200，got %d: %s", rec1.Code, rec1.Body.String())
+	}
+	// 相同请求：命中缓存，响应一致，不再调上游
+	rec2 := doChat(t, srv, am, st, plainA, bodyA)
+	if rec2.Code != http.StatusOK || rec2.Body.String() != rec1.Body.String() {
+		t.Fatalf("命中应 200 且响应与首次一致，got %d", rec2.Code)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("相同请求应只调一次上游，got %d 次", got)
+	}
+	// 不同令牌：不共享缓存
+	if rec := doChat(t, srv, am, st, plainB, bodyA); rec.Code != http.StatusOK {
+		t.Fatalf("不同令牌应 200，got %d", rec.Code)
+	}
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("不同令牌应重新调上游，got %d 次", got)
+	}
+	// 不同请求体：不命中
+	if rec := doChat(t, srv, am, st, plainA, bodyB); rec.Code != http.StatusOK {
+		t.Fatalf("不同 body 应 200，got %d", rec.Code)
+	}
+	if got := calls.Load(); got != 3 {
+		t.Fatalf("不同 body 应重新调上游，got %d 次", got)
+	}
+	// TTL 过期：重新调上游
+	time.Sleep(120 * time.Millisecond)
+	if rec := doChat(t, srv, am, st, plainA, bodyA); rec.Code != http.StatusOK {
+		t.Fatalf("TTL 过期后应 200，got %d", rec.Code)
+	}
+	if got := calls.Load(); got != 4 {
+		t.Fatalf("TTL 过期后应重新调上游，got %d 次", got)
+	}
+
+	// 命中日志：5 个请求中恰好 1 条 cache_hit=1（第二次请求），未命中日志记录实际渠道
+	logs := waitLogs(t, st, 5)
+	if hits, _ := st.CountCacheHits(ctx, store.LogFilter{}); hits != 1 {
+		t.Errorf("应恰好 1 条命中日志，got %d", hits)
+	}
+	missLogged := false
+	for _, l := range logs {
+		if l.CacheHit && (l.ChannelID != 0 || l.Status != http.StatusOK || l.PromptTokens != 5 || l.CompletionTokens != 3) {
+			t.Errorf("命中日志字段错误: %+v", l)
+		}
+		if !l.CacheHit && l.ChannelID == chID {
+			missLogged = true
+		}
+	}
+	if !missLogged {
+		t.Error("未命中日志应记录实际渠道 ID")
+	}
+}
+
+// 流式请求不写缓存：相同流式请求每次都调上游，且不会让后续相同内容的非流式请求命中。
+func TestResponseCacheStreamNotCached(t *testing.T) {
+	srv, st, am := newTestSrvCache(t, time.Hour) // 长 TTL 排除过期干扰
+	ctx := context.Background()
+
+	var calls atomic.Int64
+	sse := `data: {"choices":[{"index":0,"delta":{"content":"你"},"finish_reason":null}]}
+data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":1,"total_tokens":3}}
+data: [DONE]
+`
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		b, _ := io.ReadAll(r.Body)
+		if strings.Contains(string(b), `"stream":true`) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = io.WriteString(w, sse)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"chatcmpl-1","created":1700000000,"model":"deepseek-chat","choices":[{"index":0,"message":{"role":"assistant","content":"你"},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":1,"total_tokens":3}}`)
+	}))
+	t.Cleanup(upstream.Close)
+
+	uid, _ := st.CreateUser(ctx, "admin", "hash", "admin")
+	plain := "token-a"
+	_, _ = st.CreateToken(ctx, uid, "t", auth.HashToken(plain), []string{"deepseek-chat"}, true)
+	addTestChannel(t, st, upstream.URL)
+
+	streamBody := `{"model":"deepseek-chat","stream":true,"messages":[{"role":"user","content":"你好"}]}`
+	for i := 0; i < 2; i++ {
+		if rec := doChat(t, srv, am, st, plain, streamBody); rec.Code != http.StatusOK {
+			t.Fatalf("流式请求应 200，got %d: %s", rec.Code, rec.Body.String())
+		}
+	}
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("相同流式请求不应命中缓存，got %d 次上游调用", got)
+	}
+	// 相同内容的非流式请求：流式未写缓存 → 仍调上游
+	nonStreamBody := `{"model":"deepseek-chat","messages":[{"role":"user","content":"你好"}]}`
+	if rec := doChat(t, srv, am, st, plain, nonStreamBody); rec.Code != http.StatusOK {
+		t.Fatalf("非流式请求应 200，got %d", rec.Code)
+	}
+	if got := calls.Load(); got != 3 {
+		t.Fatalf("流式不写缓存，非流式应重新调上游，got %d 次", got)
+	}
 }

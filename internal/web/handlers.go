@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"sort"
 	"strconv"
@@ -74,6 +75,12 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 	channels, _ := s.store.CountChannels(ctx)
 	models, _ := s.store.CountModels(ctx)
 	logs, _ := s.store.ListRequestLogs(ctx, store.LogFilter{}, 8, 0)
+	totalLogs, _ := s.store.CountRequestLogsTotal(ctx)
+	hits, _ := s.store.CountCacheHits(ctx, store.LogFilter{})
+	hitRate := "-"
+	if totalLogs > 0 {
+		hitRate = fmt.Sprintf("%.1f%%", float64(hits)/float64(totalLogs)*100)
+	}
 	chNames := map[int64]string{}
 	for _, c := range channelsList(ctx, s) {
 		chNames[c.ID] = c.Name
@@ -87,12 +94,14 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	s.render(w, r, "dashboard.html", baseData("仪表盘 · 智能 API 网关", "dashboard", map[string]any{
-		"Flash":    s.readFlash(w, r),
-		"Users":    users,
-		"Tokens":   tokens,
-		"Channels": channels,
-		"Models":   models,
-		"RecentLogs": views,
+		"Flash":        s.readFlash(w, r),
+		"Users":        users,
+		"Tokens":       tokens,
+		"Channels":     channels,
+		"Models":       models,
+		"CacheHits":    hits,
+		"CacheHitRate": hitRate,
+		"RecentLogs":   views,
 	}))
 }
 

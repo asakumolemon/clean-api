@@ -84,6 +84,8 @@ curl http://127.0.0.1:8080/v1/chat/completions \
 | `health_check_interval_seconds` | `GATEWAY_HEALTH_CHECK_INTERVAL_SECONDS` | `300` | 健康检查间隔 |
 | `health_check_max_failures` | `GATEWAY_HEALTH_CHECK_MAX_FAILURES` | `3` | 连续失败 N 次标记 down |
 | `key_cooldown_seconds` | `GATEWAY_KEY_COOLDOWN_SECONDS` | `60` | 单 key 冷却时长（429/401 后） |
+| `cache_enabled` | `GATEWAY_CACHE_ENABLED` | `true` | 响应缓存开关：重复的非流式请求直接返回缓存响应、不调上游（命中率在日志页/仪表盘展示） |
+| `cache_ttl_seconds` | `GATEWAY_CACHE_TTL_SECONDS` | `300` | 响应缓存 TTL |
 | `model_redirects` | — | `{}` | 全局模型重定向：`{"旧模型名": "实际模型名"}` |
 | `admin_username` | `GATEWAY_ADMIN_USERNAME` | `admin` | 首启管理员用户名 |
 | `admin_password` | `GATEWAY_ADMIN_PASSWORD` | 随机生成 | 首启管理员密码（随机时打印到日志） |

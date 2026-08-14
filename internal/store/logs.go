@@ -19,15 +19,16 @@ type RequestLog struct {
 	LatencyMS        int64
 	PromptTokens     int
 	CompletionTokens int
+	CacheHit         bool // 响应缓存命中（M7 后：命中时未调上游，channel_id 为 0）
 	Error            string
 }
 
 // LogFilter 日志查询筛选（全部字段为空/零值表示不过滤）。
 type LogFilter struct {
-	Model  string // 按模型名模糊匹配
-	Token  string // 按令牌名精确匹配（空=全部）
-	Status string // all | 2xx | 4xx | 5xx
-	UserID int64  // 0=全部用户
+	Model  string     // 按模型名模糊匹配
+	Token  string     // 按令牌名精确匹配（空=全部）
+	Status string     // all | 2xx | 4xx | 5xx
+	UserID int64      // 0=全部用户
 	From   *time.Time // 起（含，UTC）；空=不限
 	To     *time.Time // 止（排他，UTC，To 当日 24:00）；空=不限
 }
@@ -37,6 +38,7 @@ type UsageRow struct {
 	Day              string
 	Model            string
 	Requests         int
+	CacheHits        int // 响应缓存命中请求数（M7 后）
 	PromptTokens     int64
 	CompletionTokens int64
 	TotalTokens      int64 // PromptTokens + CompletionTokens
@@ -45,10 +47,10 @@ type UsageRow struct {
 // InsertRequestLog 写一条请求日志（调用方负责异步与错误忽略）。
 func (s *Store) InsertRequestLog(ctx context.Context, l *RequestLog) error {
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO request_logs(ts, request_id, token_id, user_id, model, channel_id, status, latency_ms, prompt_tokens, completion_tokens, error)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
+		INSERT INTO request_logs(ts, request_id, token_id, user_id, model, channel_id, status, latency_ms, prompt_tokens, completion_tokens, cache_hit, error)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
 		l.TS, l.RequestID, l.TokenID, l.UserID, l.Model, l.ChannelID, l.Status, l.LatencyMS,
-		l.PromptTokens, l.CompletionTokens, l.Error)
+		l.PromptTokens, l.CompletionTokens, boolToInt(l.CacheHit), l.Error)
 	if err != nil {
 		return fmt.Errorf("写入请求日志: %w", err)
 	}
@@ -61,7 +63,7 @@ func (s *Store) ListRequestLogs(ctx context.Context, f LogFilter, limit, offset 
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, ts, request_id, COALESCE(token_id,0), COALESCE(user_id,0), COALESCE(model,''),
 		       COALESCE(channel_id,0), COALESCE(status,0), COALESCE(latency_ms,0),
-		       COALESCE(prompt_tokens,0), COALESCE(completion_tokens,0), COALESCE(error,'')
+		       COALESCE(prompt_tokens,0), COALESCE(completion_tokens,0), COALESCE(cache_hit,0), COALESCE(error,'')
 		FROM request_logs`+where+` ORDER BY id DESC LIMIT ? OFFSET ?`,
 		append(args, limit, offset)...)
 	if err != nil {
@@ -71,10 +73,12 @@ func (s *Store) ListRequestLogs(ctx context.Context, f LogFilter, limit, offset 
 	logs := []RequestLog{}
 	for rows.Next() {
 		var l RequestLog
+		var hit int
 		if err := rows.Scan(&l.ID, &l.TS, &l.RequestID, &l.TokenID, &l.UserID, &l.Model,
-			&l.ChannelID, &l.Status, &l.LatencyMS, &l.PromptTokens, &l.CompletionTokens, &l.Error); err != nil {
+			&l.ChannelID, &l.Status, &l.LatencyMS, &l.PromptTokens, &l.CompletionTokens, &hit, &l.Error); err != nil {
 			return nil, err
 		}
+		l.CacheHit = hit != 0
 		logs = append(logs, l)
 	}
 	return logs, rows.Err()
@@ -85,6 +89,20 @@ func (s *Store) CountRequestLogs(ctx context.Context, f LogFilter) (int, error) 
 	where, args := logFilterWhere(f)
 	var n int
 	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM request_logs`+where, args...).Scan(&n)
+	return n, err
+}
+
+// CountCacheHits 统计筛选条件下的缓存命中条数（命中率 = CountCacheHits/CountRequestLogs）。
+func (s *Store) CountCacheHits(ctx context.Context, f LogFilter) (int, error) {
+	where, args := logFilterWhere(f)
+	q := `SELECT COUNT(*) FROM request_logs`
+	if where != "" {
+		q += where + " AND cache_hit = 1"
+	} else {
+		q += " WHERE cache_hit = 1"
+	}
+	var n int
+	err := s.db.QueryRowContext(ctx, q, args...).Scan(&n)
 	return n, err
 }
 
@@ -137,7 +155,7 @@ func (s *Store) LogUsageStats(ctx context.Context, f LogFilter) ([]UsageRow, err
 	where, args := logFilterWhere(f)
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT COALESCE(substr(ts, 1, 10), '') AS day, COALESCE(model,''), COUNT(*),
-		       COALESCE(SUM(prompt_tokens),0), COALESCE(SUM(completion_tokens),0)
+		       COALESCE(SUM(cache_hit),0), COALESCE(SUM(prompt_tokens),0), COALESCE(SUM(completion_tokens),0)
 		FROM request_logs`+where+`
 		GROUP BY substr(ts, 1, 10), model
 		ORDER BY day DESC, COUNT(*) DESC, model`, args...)
@@ -148,7 +166,7 @@ func (s *Store) LogUsageStats(ctx context.Context, f LogFilter) ([]UsageRow, err
 	stats := []UsageRow{}
 	for rows.Next() {
 		var u UsageRow
-		if err := rows.Scan(&u.Day, &u.Model, &u.Requests, &u.PromptTokens, &u.CompletionTokens); err != nil {
+		if err := rows.Scan(&u.Day, &u.Model, &u.Requests, &u.CacheHits, &u.PromptTokens, &u.CompletionTokens); err != nil {
 			return nil, err
 		}
 		u.TotalTokens = u.PromptTokens + u.CompletionTokens

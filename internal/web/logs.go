@@ -2,6 +2,7 @@
 package web
 
 import (
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -58,11 +59,17 @@ func (s *Server) logsPage(w http.ResponseWriter, r *http.Request) {
 
 	// 按天×模型用量统计（与列表共用同一筛选，含时间范围）。
 	stats, _ := s.store.LogUsageStats(ctx, f)
-	var sumReq, sumPrompt, sumCompletion int64
+	var sumReq, sumPrompt, sumCompletion, sumHits int64
 	for _, st := range stats {
 		sumReq += int64(st.Requests)
+		sumHits += int64(st.CacheHits)
 		sumPrompt += st.PromptTokens
 		sumCompletion += st.CompletionTokens
+	}
+	// 缓存命中率（响应缓存，M7 后；无请求时显示 -）
+	hitRate := "-"
+	if sumReq > 0 {
+		hitRate = fmt.Sprintf("%.1f%%", float64(sumHits)/float64(sumReq)*100)
 	}
 
 	// 令牌名与渠道名映射
@@ -92,20 +99,22 @@ func (s *Server) logsPage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.render(w, r, "logs.html", baseData("请求日志 · 智能 API 网关", "logs", map[string]any{
-		"Flash":          s.readFlash(w, r),
-		"Logs":           views,
-		"Filter":         f,
-		"Tokens":         allTokenNames,
-		"Page":           page,
-		"TotalPages":     totalPages,
-		"Total":          total,
-		"From":           fromStr,
-		"To":             toStr,
-		"Stats":          stats,
-		"StatsRequests":  sumReq,
-		"StatsPrompt":    sumPrompt,
+		"Flash":           s.readFlash(w, r),
+		"Logs":            views,
+		"Filter":          f,
+		"Tokens":          allTokenNames,
+		"Page":            page,
+		"TotalPages":      totalPages,
+		"Total":           total,
+		"From":            fromStr,
+		"To":              toStr,
+		"Stats":           stats,
+		"StatsRequests":   sumReq,
+		"StatsHits":       sumHits,
+		"HitRate":         hitRate,
+		"StatsPrompt":     sumPrompt,
 		"StatsCompletion": sumCompletion,
-		"StatsTotal":     sumPrompt + sumCompletion,
+		"StatsTotal":      sumPrompt + sumCompletion,
 	}))
 }
 

@@ -309,6 +309,66 @@ func TestLogsPageStats(t *testing.T) {
 	}
 }
 
+// 日志页缓存命中率（M7 后）：汇总卡片命中率百分比 + 命中次数，明细表命中/请求列。
+func TestLogsPageCacheHitRate(t *testing.T) {
+	up := fakeUpstream(t)
+	defer up.Close()
+	ts, st, client := newTestWeb(t, up)
+	ctx := context.Background()
+
+	// 3 条日志：2 命中 1 未命中（命中率 66.7%）
+	for i := 0; i < 2; i++ {
+		_ = st.InsertRequestLog(ctx, &store.RequestLog{
+			TS: time.Now().UTC(), RequestID: "hit-log", Model: "model-a", Status: 200, CacheHit: true,
+		})
+	}
+	_ = st.InsertRequestLog(ctx, &store.RequestLog{
+		TS: time.Now().UTC(), RequestID: "miss-log", Model: "model-a", Status: 200,
+	})
+
+	page, err := client.Get(ts.URL + "/admin/logs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := make([]byte, 2<<20)
+	n, _ := page.Body.Read(body)
+	page.Body.Close()
+	html := string(body[:n])
+	if page.StatusCode != http.StatusOK {
+		t.Fatalf("日志页应 200，got %d", page.StatusCode)
+	}
+	for _, s := range []string{"缓存命中率（2 次命中）", "66.7%", "2/3"} {
+		if !strings.Contains(html, s) {
+			t.Errorf("日志页应包含命中率元素 %q", s)
+		}
+	}
+}
+
+// 仪表盘缓存命中率卡片（M7 后）。
+func TestDashboardCacheHitRate(t *testing.T) {
+	up := fakeUpstream(t)
+	defer up.Close()
+	ts, st, client := newTestWeb(t, up)
+	ctx := context.Background()
+
+	_ = st.InsertRequestLog(ctx, &store.RequestLog{TS: time.Now().UTC(), RequestID: "hit-dash", Model: "model-a", Status: 200, CacheHit: true})
+	_ = st.InsertRequestLog(ctx, &store.RequestLog{TS: time.Now().UTC(), RequestID: "miss-dash", Model: "model-a", Status: 200})
+
+	page, err := client.Get(ts.URL + "/admin/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := make([]byte, 2<<20)
+	n, _ := page.Body.Read(body)
+	page.Body.Close()
+	html := string(body[:n])
+	for _, s := range []string{"缓存命中率（1 次命中）", "50.0%"} {
+		if !strings.Contains(html, s) {
+			t.Errorf("仪表盘应包含命中率卡片 %q", s)
+		}
+	}
+}
+
 func TestPlayground(t *testing.T) {
 	up := fakeUpstream(t)
 	defer up.Close()

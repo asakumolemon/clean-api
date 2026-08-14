@@ -152,6 +152,88 @@ func TestRequestLogsCleanup(t *testing.T) {
 	}
 }
 
+// cache_hit 列（M7 后响应缓存命中标记）：写入/读取往返、CountCacheHits 计数（含筛选）、
+// LogUsageStats 行内 CacheHits 聚合。
+func TestRequestLogCacheHit(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	hit := func(model string) {
+		t.Helper()
+		l := &RequestLog{TS: now, RequestID: "req-hit", Model: model, Status: 200, CacheHit: true, PromptTokens: 5, CompletionTokens: 3}
+		if err := s.InsertRequestLog(ctx, l); err != nil {
+			t.Fatal(err)
+		}
+	}
+	miss := func(model string) {
+		t.Helper()
+		l := &RequestLog{TS: now, RequestID: "req-miss", Model: model, Status: 200}
+		if err := s.InsertRequestLog(ctx, l); err != nil {
+			t.Fatal(err)
+		}
+	}
+	hit("deepseek-chat")
+	miss("deepseek-chat")
+	hit("gpt-4o")
+
+	// 读取：CacheHit 往返正确
+	logs, err := s.ListRequestLogs(ctx, LogFilter{}, 10, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hits, missN := 0, 0
+	for _, l := range logs {
+		if l.CacheHit {
+			hits++
+		} else {
+			missN++
+		}
+	}
+	if hits != 2 || missN != 1 {
+		t.Errorf("命中/未命中应为 2/1，got %d/%d", hits, missN)
+	}
+
+	// CountCacheHits：全量 + 带筛选（命中且匹配模型）
+	n, _ := s.CountCacheHits(ctx, LogFilter{})
+	if n != 2 {
+		t.Errorf("全部命中应为 2，got %d", n)
+	}
+	n, _ = s.CountCacheHits(ctx, LogFilter{Model: "deepseek"})
+	if n != 1 {
+		t.Errorf("模型筛选命中应为 1，got %d", n)
+	}
+
+	// LogUsageStats：同日同模型分组，行内 CacheHits 正确
+	stats, err := s.LogUsageStats(ctx, LogFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	byModel := map[string]int{}
+	for _, st := range stats {
+		byModel[st.Model] = st.CacheHits
+	}
+	if byModel["deepseek-chat"] != 1 || byModel["gpt-4o"] != 1 {
+		t.Errorf("按模型命中数错误: %+v", byModel)
+	}
+}
+
+// ensureColumn 补列幂等：重复执行不报错，列存在（migrate 已建 cache_hit，此处验证可重复补）。
+func TestEnsureColumnIdempotent(t *testing.T) {
+	s := newTestStore(t)
+	// migrate 已带 cache_hit 列，重复补列应幂等成功
+	if err := s.ensureColumn("request_logs", "cache_hit", "cache_hit INTEGER DEFAULT 0"); err != nil {
+		t.Fatalf("重复补列应成功: %v", err)
+	}
+	// 补一个不存在的新列，再补一次验证幂等
+	if err := s.ensureColumn("request_logs", "cache_mark", "cache_mark INTEGER DEFAULT 0"); err != nil {
+		t.Fatalf("补新列应成功: %v", err)
+	}
+	if err := s.ensureColumn("request_logs", "cache_mark", "cache_mark INTEGER DEFAULT 0"); err != nil {
+		t.Fatalf("再次补列应幂等: %v", err)
+	}
+}
+
 // --- users 扩展 ---
 
 func TestUserRolePasswordDelete(t *testing.T) {

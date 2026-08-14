@@ -100,6 +100,7 @@ func (s *Store) migrate() error {
 			latency_ms INTEGER,
 			prompt_tokens INTEGER,
 			completion_tokens INTEGER,
+			cache_hit INTEGER DEFAULT 0,
 			error TEXT
 		);`,
 		// 请求日志查询索引（M5 日志页筛选/分页用）
@@ -112,7 +113,31 @@ func (s *Store) migrate() error {
 			return err
 		}
 	}
-	return nil
+	// 老库补列（首个 ALTER 先例）：request_logs.cache_hit（M7 后响应缓存命中标记）
+	return s.ensureColumn("request_logs", "cache_hit", "cache_hit INTEGER DEFAULT 0")
+}
+
+// ensureColumn 检测表是否已有指定列，缺失则 ALTER TABLE ADD COLUMN 补上（幂等）。
+// PRAGMA table_info 列：cid, name, type, notnull, dflt_value, pk。
+func (s *Store) ensureColumn(table, column, ddl string) error {
+	rows, err := s.db.Query(`PRAGMA table_info(` + table + `)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid, notnull, pk int
+		var name, ctype string
+		var dflt any
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return err
+		}
+		if name == column {
+			return nil
+		}
+	}
+	_, err = s.db.Exec(`ALTER TABLE ` + table + ` ADD COLUMN ` + ddl)
+	return err
 }
 
 func now() time.Time { return time.Now().UTC() }

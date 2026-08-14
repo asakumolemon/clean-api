@@ -21,6 +21,7 @@ import (
 
 	"api-gateway/internal/api"
 	"api-gateway/internal/auth"
+	"api-gateway/internal/cache"
 	"api-gateway/internal/channel"
 	"api-gateway/internal/config"
 	"api-gateway/internal/crypto"
@@ -92,6 +93,9 @@ func main() {
 	chm.SetProbeCapabilities(cfg.ProbeCapabilities)
 	rt := router.New(st, chm, cfg.RoutingStrategy, time.Duration(cfg.DefaultTimeoutSec)*time.Second, cfg.ModelRedirects)
 
+	// 响应缓存（M7 后）：非流式请求按 token+请求体哈希缓存，命中不调上游；命中率由请求日志统计。
+	cm := cache.New(*cfg.CacheEnabled, time.Duration(cfg.CacheTTLSec)*time.Second)
+
 	r := chi.NewRouter()
 	r.Use(recoverMW)
 	adminWeb, err := web.New(st, sessions, chm, rt, version)
@@ -100,7 +104,7 @@ func main() {
 	}
 	adminWeb.Mount(r)
 
-	apiServer := api.New(st, rt)
+	apiServer := api.New(st, rt, cm)
 	r.Route("/v1", func(r chi.Router) {
 		r.Use(sessions.APIAuth(st))
 		r.Get("/models", apiServer.Models)

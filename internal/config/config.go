@@ -9,23 +9,25 @@ import (
 
 // Config 网关自身配置。
 type Config struct {
-	Addr              string `json:"addr"`                    // HTTP 监听地址
-	DBPath            string `json:"db_path"`                 // SQLite 文件路径
-	SessionSecret     string `json:"session_secret"`          // 管理面 session 签名密钥，缺省随机生成（重启后失效）
-	LogLevel          string `json:"log_level"`               // debug|info|warn|error
-	LogRetentionDays  int    `json:"log_retention_days"`      // 请求日志保留天数，默认 7
-	DefaultTimeoutSec int    `json:"default_timeout_seconds"` // 上游请求默认超时，默认 120
-	AdminUsername     string `json:"admin_username"`          // 首次启动创建的管理员用户名
-	AdminPassword     string `json:"admin_password"`          // 首次启动创建的管理员密码（建议用环境变量，勿入库）
-	EncKey            string            `json:"enc_key"`                 // 上游 API key 的 AES-GCM 加密密钥（M2 起使用）
-	SessionSecure     bool              `json:"session_secure"`          // 管理面 cookie 加 Secure（仅 HTTPS 时开启，默认关）
-	RoutingStrategy   string            `json:"routing_strategy"`        // 模型→渠道选择策略：random|round_robin（默认 random，M3 起使用）
-	HealthCheckEnabled bool              `json:"health_check_enabled"`    // 渠道健康检查开关（默认开，M5 起使用）
-	HealthCheckIntervalSec int           `json:"health_check_interval_seconds"` // 健康检查间隔秒，默认 300
-	HealthCheckMaxFailures int           `json:"health_check_max_failures"`     // 连续失败 N 次标记 down，默认 3
-	KeyCooldownSec    int               `json:"key_cooldown_seconds"`     // 单 key 冷却时长秒（429/401 后，默认 60，M6 起使用）
-	ProbeCapabilities bool              `json:"probe_capabilities"`       // 添加渠道时是否对每个模型发最小试调用探测能力（默认关：省时省配额，能力用保守默认值，可在模型管理页手动调整；M6 起使用）
-	ModelRedirects    map[string]string `json:"model_redirects"`          // 全局模型重定向：请求模型名 → 实际模型名（M5 起使用）
+	Addr                   string            `json:"addr"`                          // HTTP 监听地址
+	DBPath                 string            `json:"db_path"`                       // SQLite 文件路径
+	SessionSecret          string            `json:"session_secret"`                // 管理面 session 签名密钥，缺省随机生成（重启后失效）
+	LogLevel               string            `json:"log_level"`                     // debug|info|warn|error
+	LogRetentionDays       int               `json:"log_retention_days"`            // 请求日志保留天数，默认 7
+	DefaultTimeoutSec      int               `json:"default_timeout_seconds"`       // 上游请求默认超时，默认 120
+	AdminUsername          string            `json:"admin_username"`                // 首次启动创建的管理员用户名
+	AdminPassword          string            `json:"admin_password"`                // 首次启动创建的管理员密码（建议用环境变量，勿入库）
+	EncKey                 string            `json:"enc_key"`                       // 上游 API key 的 AES-GCM 加密密钥（M2 起使用）
+	SessionSecure          bool              `json:"session_secure"`                // 管理面 cookie 加 Secure（仅 HTTPS 时开启，默认关）
+	RoutingStrategy        string            `json:"routing_strategy"`              // 模型→渠道选择策略：random|round_robin（默认 random，M3 起使用）
+	HealthCheckEnabled     bool              `json:"health_check_enabled"`          // 渠道健康检查开关（默认开，M5 起使用）
+	HealthCheckIntervalSec int               `json:"health_check_interval_seconds"` // 健康检查间隔秒，默认 300
+	HealthCheckMaxFailures int               `json:"health_check_max_failures"`     // 连续失败 N 次标记 down，默认 3
+	KeyCooldownSec         int               `json:"key_cooldown_seconds"`          // 单 key 冷却时长秒（429/401 后，默认 60，M6 起使用）
+	ProbeCapabilities      bool              `json:"probe_capabilities"`            // 添加渠道时是否对每个模型发最小试调用探测能力（默认关：省时省配额，能力用保守默认值，可在模型管理页手动调整；M6 起使用）
+	ModelRedirects         map[string]string `json:"model_redirects"`               // 全局模型重定向：请求模型名 → 实际模型名（M5 起使用）
+	CacheEnabled           *bool             `json:"cache_enabled"`                 // 响应缓存开关（默认开；重复的非流式请求直接返回缓存响应，省上游调用；M7 后起使用）
+	CacheTTLSec            int               `json:"cache_ttl_seconds"`             // 响应缓存 TTL 秒（默认 300，M7 后起使用）
 }
 
 // Load 从 JSON 文件读取配置并叠加默认值与环境变量覆盖。
@@ -76,6 +78,13 @@ func (c *Config) setDefaults() {
 	if c.KeyCooldownSec == 0 {
 		c.KeyCooldownSec = 60
 	}
+	if c.CacheEnabled == nil {
+		enabled := true
+		c.CacheEnabled = &enabled
+	}
+	if c.CacheTTLSec == 0 {
+		c.CacheTTLSec = 300
+	}
 }
 
 // applyEnv 用 GATEWAY_* 环境变量覆盖配置项。
@@ -122,5 +131,12 @@ func (c *Config) applyEnv() {
 	}
 	if v := get("PROBE_CAPABILITIES"); v != "" {
 		c.ProbeCapabilities = v == "1" || v == "true"
+	}
+	if v := get("CACHE_ENABLED"); v != "" {
+		enabled := v == "1" || v == "true"
+		c.CacheEnabled = &enabled
+	}
+	if v := get("CACHE_TTL_SECONDS"); v != "" {
+		fmt.Sscanf(v, "%d", &c.CacheTTLSec)
 	}
 }

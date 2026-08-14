@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"api-gateway/internal/auth"
+	"api-gateway/internal/cache"
 	"api-gateway/internal/protocol"
 	"api-gateway/internal/router"
 	"api-gateway/internal/store"
@@ -31,10 +32,11 @@ const (
 type Server struct {
 	store  *store.Store
 	router *router.Router
+	cache  *cache.Manager
 }
 
-func New(s *store.Store, r *router.Router) *Server {
-	return &Server{store: s, router: r}
+func New(s *store.Store, r *router.Router, c *cache.Manager) *Server {
+	return &Server{store: s, router: r, cache: c}
 }
 
 // ChatCompletions POST /v1/chat/completions（OpenAI Chat 入口）。
@@ -90,8 +92,26 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request, entry entryProto
 		return
 	}
 
+	// 响应缓存（非流式）：命中直接返回缓存响应，不调上游。key 含 tokenID 与请求体
+	// （令牌隔离 + 参数全量入键），白名单已先行校验；model_redirects 为静态映射，
+	// 同一对外名恒映射同一实际名，用对外名作 key 安全。命中仍写请求日志（cache_hit=1）。
+	cacheKey := ""
+	if !req.Stream && s.cache.Enabled() {
+		cacheKey = cache.Key(tok.ID, body)
+		if resp, ok := s.cache.Get(cacheKey); ok {
+			if out, err := serializeResponse(entry, resp); err == nil {
+				s.logRequest(r, req.Model, 0, start, requestID, http.StatusOK, "",
+					resp.Usage.PromptTokens, resp.Usage.CompletionTokens, true)
+				w.Header().Set("Content-Type", "application/json; charset=utf-8")
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write(out)
+				return
+			}
+		}
+	}
+
 	if !req.Stream {
-		s.handleNonStream(w, r, entry, req, requestID, start)
+		s.handleNonStream(w, r, entry, req, requestID, start, cacheKey)
 		return
 	}
 	s.handleStream(w, r, entry, req, requestID, start)
@@ -108,36 +128,43 @@ func parseEntry(entry entryProtocol, body []byte) (*protocol.ChatRequest, error)
 	}
 }
 
-// handleNonStream 非流式：router.Chat → 出口序列化 → 200 JSON。
-func (s *Server) handleNonStream(w http.ResponseWriter, r *http.Request, entry entryProtocol, req *protocol.ChatRequest, requestID string, start time.Time) {
+// handleNonStream 非流式：router.Chat → 出口序列化 → 200 JSON。成功后写响应缓存（cacheKey 非空时）。
+func (s *Server) handleNonStream(w http.ResponseWriter, r *http.Request, entry entryProtocol, req *protocol.ChatRequest, requestID string, start time.Time, cacheKey string) {
 	res, err := s.router.Chat(r.Context(), req.Model, req)
 	if err != nil {
 		chID := int64(0)
 		if res != nil {
 			chID = res.ChannelID // 错误时也携带实际尝试渠道（请求日志用）
 		}
-		s.logRequest(r, req.Model, chID, start, requestID, errorStatus(err), err.Error(), 0, 0)
+		s.logRequest(r, req.Model, chID, start, requestID, errorStatus(err), err.Error(), 0, 0, false)
 		s.writeRouteError(w, entry, err, req.Model)
 		return
 	}
-	var out []byte
-	switch entry {
-	case entryAnthropic:
-		out, err = protocol.SerializeAnthropicMessagesResponse(res.Resp)
-	case entryResponses:
-		out, err = protocol.SerializeResponsesResponse(res.Resp)
-	default:
-		out, err = protocol.SerializeOpenAIChatResponse(res.Resp)
-	}
+	out, err := serializeResponse(entry, res.Resp)
 	if err != nil {
 		s.writeEntryError(w, entry, http.StatusInternalServerError, "internal_error", "序列化响应失败: "+err.Error())
 		return
 	}
+	if cacheKey != "" {
+		s.cache.Set(cacheKey, res.Resp) // 只缓存成功响应
+	}
 	s.logRequest(r, req.Model, res.ChannelID, start, requestID, http.StatusOK, "",
-		res.Resp.Usage.PromptTokens, res.Resp.Usage.CompletionTokens)
+		res.Resp.Usage.PromptTokens, res.Resp.Usage.CompletionTokens, false)
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(out)
+}
+
+// serializeResponse 按入口协议序列化非流式响应。
+func serializeResponse(entry entryProtocol, resp *protocol.ChatResponse) ([]byte, error) {
+	switch entry {
+	case entryAnthropic:
+		return protocol.SerializeAnthropicMessagesResponse(resp)
+	case entryResponses:
+		return protocol.SerializeResponsesResponse(resp)
+	default:
+		return protocol.SerializeOpenAIChatResponse(resp)
+	}
 }
 
 // handleStream 流式：SSE 头 → 首个事件时写 200 → router.ChatStream（emit 写出口事件）。
@@ -164,12 +191,12 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request, entry entr
 		if !started {
 			// 路由层错误（模型不存在/上游 4xx 等）：HTTP 头未发，可写正常 JSON 错误
 			status := errorStatus(err)
-			s.logRequest(r, req.Model, chID, start, requestID, status, err.Error(), 0, 0)
+			s.logRequest(r, req.Model, chID, start, requestID, status, err.Error(), 0, 0, false)
 			s.writeRouteError(w, entry, err, req.Model)
 			return
 		}
 		_ = writer.WriteError(err) // 流中错误：协议 error 事件
-		s.logRequest(r, req.Model, chID, start, requestID, 0, err.Error(), 0, 0)
+		s.logRequest(r, req.Model, chID, start, requestID, 0, err.Error(), 0, 0, false)
 		return
 	}
 	_ = writer.Finish() // 收尾（未收到 done 时补发结束事件，防客户端挂起）
@@ -178,11 +205,11 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request, entry entr
 	if usage != nil {
 		pt, ct = usage.PromptTokens, usage.CompletionTokens
 	}
-	s.logRequest(r, req.Model, chID, start, requestID, http.StatusOK, "", pt, ct)
+	s.logRequest(r, req.Model, chID, start, requestID, http.StatusOK, "", pt, ct, false)
 }
 
 // logRequest 异步写请求日志（失败忽略，不影响主流程，符合 REQUIREMENTS §2.6）。
-func (s *Server) logRequest(r *http.Request, model string, channelID int64, start time.Time, requestID string, status int, errText string, promptTokens, completionTokens int) {
+func (s *Server) logRequest(r *http.Request, model string, channelID int64, start time.Time, requestID string, status int, errText string, promptTokens, completionTokens int, cacheHit bool) {
 	tok := auth.TokenFromContext(r.Context())
 	user := auth.UserFromContext(r.Context())
 	var tokID, userID int64
@@ -205,6 +232,7 @@ func (s *Server) logRequest(r *http.Request, model string, channelID int64, star
 		LatencyMS:        time.Since(start).Milliseconds(),
 		PromptTokens:     promptTokens,
 		CompletionTokens: completionTokens,
+		CacheHit:         cacheHit,
 		Error:            truncateLog(errText, 300),
 	}
 	go func() {
