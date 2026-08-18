@@ -280,7 +280,7 @@ API Key：{{$single.Plain}}
                 <button type="submit"
                   class="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100">复制</button>
               </form>
-              <button type="button" onclick='openEditModal({{.ID}}, {{.WhitelistJSON}}, {{if .AllowAll}}true{{else}}false{{end}})'
+              <button type="button" data-id="{{.ID}}" data-whitelist="{{.WhitelistJSON}}" data-allow-all="{{if .AllowAll}}true{{else}}false{{end}}" onclick="openEditModalFromBtn(this)"
                 class="mr-1 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100">编辑模型</button>
               <form method="post" action="/admin/tokens/{{.ID}}/toggle" class="mr-1 inline">
                 <button type="submit"
@@ -448,6 +448,19 @@ function fallbackCopy(text) {
   }
   // 行内 onclick 只能解析全局作用域，须显式挂到 window（此前漏挂导致 ReferenceError）。
   window.openEditModal = openEditModal;
+  // 按钮上 data-* 已由 html/template attr-escape 安全编码白名单 JSON，
+  // 点击时统一从这里取 id/whitelist/allowAll 再调 openEditModal，避免在
+  // onclick='...' 字符串里直接渲染 string 导致被强制加引号（修复 forEach is not a function 报错）。
+  window.openEditModalFromBtn = function (btn) {
+    const id = Number(btn.dataset.id);
+    let whitelist = [];
+    try {
+      const raw = btn.dataset.whitelist;
+      if (raw) whitelist = JSON.parse(raw);
+    } catch (e) { /* 留空数组 */ }
+    const allowAll = btn.dataset.allowAll === 'true';
+    openEditModal(id, whitelist, allowAll);
+  };
   document.getElementById('edit-modal-cancel').addEventListener('click', function () {
     editModal.classList.add('hidden');
     editModal.classList.remove('flex');
