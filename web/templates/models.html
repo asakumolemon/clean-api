@@ -11,7 +11,7 @@
         class="w-72 rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200">
       <button type="submit"
         class="rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100">搜索</button>
-      <!-- 一键建令牌（多选）：收集勾选模型（每模型一个令牌），提交到 /admin/tokens/batch -->
+      <!-- 一键建令牌（多选）：收集勾选模型合并为一个令牌（白名单包含所有选中模型），提交到 /admin/tokens/batch -->
       <button type="button" id="batch-create-token"
         class="rounded-md border border-blue-200 bg-blue-50 px-4 py-2 text-sm font-medium text-blue-700 hover:bg-blue-100">建令牌</button>
       {{if .Q}}<a href="/admin/models" class="text-sm text-blue-600 hover:underline">清除搜索</a>{{end}}
@@ -125,7 +125,7 @@
       });
     });
   }
-  // 建令牌：收集勾选模型（每模型一个令牌），动态建隐藏表单提交 /admin/tokens/batch
+  // 建令牌：收集勾选模型合并为一个令牌（白名单包含所有选中模型），动态建隐藏表单提交 /admin/tokens/batch
   if (batchBtn) {
     batchBtn.addEventListener('click', function () {
       const checked = selects.filter(function (c) { return c.checked; });

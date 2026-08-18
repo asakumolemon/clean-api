@@ -1342,28 +1342,32 @@ func TestTokensBatchCreate(t *testing.T) {
 	n, _ := r.Body.Read(body)
 	r.Body.Close()
 	html := string(body[:n])
-	for _, s := range []string{"已生成 2 个令牌", "gpt-4o 令牌", "claude-3.5 令牌", "new-token-plain-"} {
+	for _, s := range []string{"令牌已生成，仅显示一次"} {
 		if !strings.Contains(html, s) {
 			t.Errorf("批量生成后页面应包含 %q", s)
 		}
 	}
 
+	// 应只创建 1 个令牌，白名单包含所有选中模型
 	toks, _ := st.ListTokens(ctx)
-	if len(toks) != 2 {
-		t.Fatalf("应创建 2 个令牌，got %d", len(toks))
+	if len(toks) != 1 {
+		t.Fatalf("应创建 1 个令牌，got %d", len(toks))
 	}
-	byName := map[string]store.Token{}
-	for _, tk := range toks {
-		byName[tk.Name] = tk
+	tk := toks[0]
+	if len(tk.ModelWhitelist) != 2 {
+		t.Fatalf("白名单应包含 2 个模型，got %+v", tk.ModelWhitelist)
 	}
-	for _, m := range []string{"gpt-4o", "claude-3.5"} {
-		tk, ok := byName[m+" 令牌"]
-		if !ok {
-			t.Fatalf("缺少 %s 令牌", m)
+	wlSet := map[string]bool{}
+	for _, m := range tk.ModelWhitelist {
+		wlSet[m] = true
+	}
+	for _, want := range []string{"gpt-4o", "claude-3.5"} {
+		if !wlSet[want] {
+			t.Errorf("白名单应包含 %s，got %+v", want, tk.ModelWhitelist)
 		}
-		if len(tk.ModelWhitelist) != 1 || tk.ModelWhitelist[0] != m || tk.AllowAll {
-			t.Errorf("%s 令牌白名单应=[%s]，got %+v", m, m, tk.ModelWhitelist)
-		}
+	}
+	if tk.AllowAll {
+		t.Error("不应设为 allow_all")
 	}
 
 	// 空选择 → 302 回令牌页

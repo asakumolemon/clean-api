@@ -256,8 +256,8 @@ func (s *Server) createToken(w http.ResponseWriter, r *http.Request) {
 }
 
 // createTokensFromModels POST /admin/tokens/batch（模型页多选建令牌）：
-// 每个选中模型各建一个令牌（whitelist=[该模型]、自动命名「X 令牌」、默认分组），
-// 全部明文同响应逐个展示。
+// 所有选中模型合并为一个令牌（whitelist 包含全部选中模型、自动命名、默认分组），
+// 明文同响应展示。
 func (s *Server) createTokensFromModels(w http.ResponseWriter, r *http.Request) {
 	_ = r.ParseForm()
 	models := r.Form["model"]
@@ -271,22 +271,22 @@ func (s *Server) createTokensFromModels(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	user := s.currentUser(w, r)
-	newTokens := make([]newTokenView, 0, len(modelsFlat))
-	for _, m := range modelsFlat {
-		plain, err := auth.GenerateToken()
-		if err != nil {
-			s.setFlash(w, r, "生成令牌失败: "+err.Error())
-			http.Redirect(w, r, "/admin/tokens", http.StatusFound)
-			return
-		}
-		if _, err := s.store.CreateToken(r.Context(), user.ID, m+" 令牌", auth.HashToken(plain), []string{m}, false); err != nil {
-			s.setFlash(w, r, "保存令牌失败: "+err.Error())
-			http.Redirect(w, r, "/admin/tokens", http.StatusFound)
-			return
-		}
-		newTokens = append(newTokens, newTokenView{Name: m + " 令牌", Plain: plain})
+	name := fmt.Sprintf("%s 令牌", modelsFlat[0])
+	if len(modelsFlat) > 1 {
+		name = fmt.Sprintf("%s 等 %d 模型令牌", modelsFlat[0], len(modelsFlat))
 	}
-	s.renderTokensPage(w, r, newTokens)
+	plain, err := auth.GenerateToken()
+	if err != nil {
+		s.setFlash(w, r, "生成令牌失败: "+err.Error())
+		http.Redirect(w, r, "/admin/tokens", http.StatusFound)
+		return
+	}
+	if _, err := s.store.CreateToken(r.Context(), user.ID, name, auth.HashToken(plain), modelsFlat, false); err != nil {
+		s.setFlash(w, r, "保存令牌失败: "+err.Error())
+		http.Redirect(w, r, "/admin/tokens", http.StatusFound)
+		return
+	}
+	s.renderTokensPage(w, r, []newTokenView{{Name: name, Plain: plain}})
 }
 
 // setTokenGroup POST /admin/tokens/{id}/group：更新令牌分组（空=归入默认分组）。
