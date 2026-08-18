@@ -29,17 +29,19 @@ func (s *Server) logsPage(w http.ResponseWriter, r *http.Request) {
 		Token:  strings.TrimSpace(r.URL.Query().Get("token")),
 		Status: r.URL.Query().Get("status"),
 	}
-	// 起止日期（YYYY-MM-DD）：from 为当日零点（含），to 为次日零点（排他，含 to 当天）。
+	// 起止日期（YYYY-MM-DD）：按管理面时区解析为本地零点，再转 UTC 与存储比对。
+	// from 为当日零点（含），to 为次日零点（排他，含 to 当天）。
 	fromStr := strings.TrimSpace(r.URL.Query().Get("from"))
 	toStr := strings.TrimSpace(r.URL.Query().Get("to"))
 	if fromStr != "" {
-		if t, err := time.Parse("2006-01-02", fromStr); err == nil {
-			f.From = &t
+		if t, err := time.ParseInLocation("2006-01-02", fromStr, s.loc); err == nil {
+			utc := t.UTC()
+			f.From = &utc
 		}
 	}
 	if toStr != "" {
-		if t, err := time.Parse("2006-01-02", toStr); err == nil {
-			end := t.Add(24 * time.Hour)
+		if t, err := time.ParseInLocation("2006-01-02", toStr, s.loc); err == nil {
+			end := t.Add(24 * time.Hour).UTC()
 			f.To = &end
 		}
 	}
@@ -57,8 +59,8 @@ func (s *Server) logsPage(w http.ResponseWriter, r *http.Request) {
 		page = totalPages
 	}
 
-	// 按天×模型用量统计（与列表共用同一筛选，含时间范围）。
-	stats, _ := s.store.LogUsageStats(ctx, f)
+	// 按天×模型用量统计（与列表共用同一筛选，含时间范围；按管理面时区分桶）。
+	stats, _ := s.store.LogUsageStats(ctx, f, s.loc)
 	var sumReq, sumPrompt, sumCompletion, sumHits int64
 	for _, st := range stats {
 		sumReq += int64(st.Requests)

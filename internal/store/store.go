@@ -58,6 +58,7 @@ func (s *Store) migrate() error {
 			model_whitelist TEXT,
 			allow_all INTEGER DEFAULT 0,
 			enabled INTEGER DEFAULT 1,
+			` + "`group`" + ` TEXT DEFAULT '',
 			created_at DATETIME,
 			last_used_at DATETIME
 		);`,
@@ -113,8 +114,12 @@ func (s *Store) migrate() error {
 			return err
 		}
 	}
-	// 老库补列（首个 ALTER 先例）：request_logs.cache_hit（M7 后响应缓存命中标记）
-	return s.ensureColumn("request_logs", "cache_hit", "cache_hit INTEGER DEFAULT 0")
+	// 老库补列（首个 ALTER 先例）：request_logs.cache_hit（M7 后响应缓存命中标记）、
+	// tokens.group（令牌分组，M7 后）。ensureColumn 幂等，可在同一迁移里链式调用。
+	if err := s.ensureColumn("request_logs", "cache_hit", "cache_hit INTEGER DEFAULT 0"); err != nil {
+		return err
+	}
+	return s.ensureColumn("tokens", "group", "`group` TEXT DEFAULT ''")
 }
 
 // ensureColumn 检测表是否已有指定列，缺失则 ALTER TABLE ADD COLUMN 补上（幂等）。

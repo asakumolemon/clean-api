@@ -98,7 +98,7 @@ func main() {
 
 	r := chi.NewRouter()
 	r.Use(recoverMW)
-	adminWeb, err := web.New(st, sessions, chm, rt, version)
+	adminWeb, err := web.New(st, sessions, chm, rt, version, cfg.Timezone)
 	if err != nil {
 		fatal("加载管理面模板失败", err)
 	}

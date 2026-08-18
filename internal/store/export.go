@@ -13,13 +13,13 @@ import (
 
 // ExportData 导出文件结构（对外可读的独立 DTO，字段小写）。
 type ExportData struct {
-	Version     int               `json:"version"`
-	ExportedAt  time.Time         `json:"exported_at"`
-	Users       []exportUser      `json:"users"`
-	Tokens      []exportToken     `json:"tokens"`
-	Channels    []exportChannel   `json:"channels"`
+	Version     int                `json:"version"`
+	ExportedAt  time.Time          `json:"exported_at"`
+	Users       []exportUser       `json:"users"`
+	Tokens      []exportToken      `json:"tokens"`
+	Channels    []exportChannel    `json:"channels"`
 	ChannelKeys []exportChannelKey `json:"channel_keys"`
-	Models      []exportModel     `json:"models"`
+	Models      []exportModel      `json:"models"`
 }
 
 type exportUser struct {
@@ -31,15 +31,16 @@ type exportUser struct {
 }
 
 type exportToken struct {
-	ID            int64     `json:"id"`
-	UserID        int64     `json:"user_id"`
-	Name          string    `json:"name"`
-	KeyHash       string    `json:"key_hash"`
-	ModelWhitelist []string `json:"model_whitelist"`
-	AllowAll      bool      `json:"allow_all"`
-	Enabled       bool      `json:"enabled"`
-	CreatedAt     time.Time `json:"created_at"`
-	LastUsedAt    *time.Time `json:"last_used_at,omitempty"`
+	ID             int64      `json:"id"`
+	UserID         int64      `json:"user_id"`
+	Name           string     `json:"name"`
+	KeyHash        string     `json:"key_hash"`
+	ModelWhitelist []string   `json:"model_whitelist"`
+	AllowAll       bool       `json:"allow_all"`
+	Enabled        bool       `json:"enabled"`
+	Group          string     `json:"group"`
+	CreatedAt      time.Time  `json:"created_at"`
+	LastUsedAt     *time.Time `json:"last_used_at,omitempty"`
 }
 
 type exportChannel struct {
@@ -60,14 +61,14 @@ type exportChannelKey struct {
 }
 
 type exportModel struct {
-	ID                 int64     `json:"id"`
-	ChannelID          int64     `json:"channel_id"`
-	Name               string    `json:"name"`
-	Enabled            bool      `json:"enabled"`
-	Alias              string    `json:"alias"`
+	ID                 int64        `json:"id"`
+	ChannelID          int64        `json:"channel_id"`
+	Name               string       `json:"name"`
+	Enabled            bool         `json:"enabled"`
+	Alias              string       `json:"alias"`
 	Capabilities       Capabilities `json:"capabilities"`
-	CapabilityOverride string    `json:"capability_override"`
-	LastSyncAt         time.Time `json:"last_sync_at"`
+	CapabilityOverride string       `json:"capability_override"`
+	LastSyncAt         time.Time    `json:"last_sync_at"`
 }
 
 // ExportAll 导出全部配置为 JSON 字节。
@@ -103,7 +104,7 @@ func (s *Store) ExportAll(ctx context.Context) ([]byte, error) {
 		data.Tokens = append(data.Tokens, exportToken{
 			ID: t.ID, UserID: t.UserID, Name: t.Name, KeyHash: t.KeyHash,
 			ModelWhitelist: t.ModelWhitelist, AllowAll: t.AllowAll, Enabled: t.Enabled,
-			CreatedAt: t.CreatedAt, LastUsedAt: last,
+			Group: t.Group, CreatedAt: t.CreatedAt, LastUsedAt: last,
 		})
 	}
 	for _, c := range channels {
@@ -174,9 +175,9 @@ func (s *Store) ImportAll(ctx context.Context, data []byte) error {
 			last = *t.LastUsedAt
 		}
 		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO tokens(id, user_id, name, key_hash, model_whitelist, allow_all, enabled, created_at, last_used_at)
-			 VALUES(?,?,?,?,?,?,?,?,?)`,
-			t.ID, t.UserID, t.Name, t.KeyHash, string(wl), boolToInt(t.AllowAll), boolToInt(t.Enabled), t.CreatedAt, last); err != nil {
+			`INSERT INTO tokens(id, user_id, name, key_hash, model_whitelist, allow_all, enabled, `+"`group`"+`, created_at, last_used_at)
+			 VALUES(?,?,?,?,?,?,?,?,?,?)`,
+			t.ID, t.UserID, t.Name, t.KeyHash, string(wl), boolToInt(t.AllowAll), boolToInt(t.Enabled), t.Group, t.CreatedAt, last); err != nil {
 			return fmt.Errorf("导入令牌 %s: %w", t.Name, err)
 		}
 	}

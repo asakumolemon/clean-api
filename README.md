@@ -86,6 +86,7 @@ curl http://127.0.0.1:8080/v1/chat/completions \
 | `key_cooldown_seconds` | `GATEWAY_KEY_COOLDOWN_SECONDS` | `60` | 单 key 冷却时长（429/401 后） |
 | `cache_enabled` | `GATEWAY_CACHE_ENABLED` | `true` | 响应缓存开关：重复的非流式请求直接返回缓存响应、不调上游（命中率在日志页/仪表盘展示） |
 | `cache_ttl_seconds` | `GATEWAY_CACHE_TTL_SECONDS` | `300` | 响应缓存 TTL |
+| `timezone` | `GATEWAY_TIMEZONE` | 服务器本地时区 | 管理面时间展示时区（IANA 名，如 `Asia/Shanghai`）；日志按天聚合、日期筛选同步按该时区 |
 | `model_redirects` | — | `{}` | 全局模型重定向：`{"旧模型名": "实际模型名"}` |
 | `admin_username` | `GATEWAY_ADMIN_USERNAME` | `admin` | 首启管理员用户名 |
 | `admin_password` | `GATEWAY_ADMIN_PASSWORD` | 随机生成 | 首启管理员密码（随机时打印到日志） |
@@ -103,7 +104,7 @@ curl http://127.0.0.1:8080/v1/chat/completions \
 
 ## 管理面功能
 
-登录 / 仪表盘（统计 + 最近请求）/ 渠道管理（添加即自动探测、启停、重探测、删除）/ 模型管理（启停、别名、能力覆盖）/ 令牌管理（白名单必填）/ 请求日志（模型/令牌/状态筛选 + 分页）/ 测试台（免令牌直连路由）/ 用户管理（多管理员）/ 导入导出（全量 JSON 迁移）。
+登录 / 仪表盘（统计 + 最近请求）/ 渠道管理（添加即自动探测、启停、重探测、删除）/ 模型管理（启停、别名、能力覆盖，多选建令牌）/ 令牌管理（白名单必填、分组、复制令牌）/ 请求日志（模型/令牌/状态筛选 + 分页）/ 测试台（免令牌直连路由）/ 用户管理（多管理员）/ 导入导出（全量 JSON 迁移）。
 
 ## 开发
 

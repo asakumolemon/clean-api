@@ -63,7 +63,7 @@
               </form>
             </td>
             <td class="px-4 py-3">{{.TokenCount}}</td>
-            <td class="px-4 py-3">{{.CreatedAt.Format "2006-01-02"}}</td>
+            <td class="px-4 py-3">{{localtime .CreatedAt "2006-01-02"}}</td>
             <td class="px-4 py-3 whitespace-nowrap">
               <form method="post" action="/admin/users/{{.ID}}/password" class="mr-1 inline">
                 <input type="password" name="password" placeholder="新密码" required

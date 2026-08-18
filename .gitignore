@@ -22,3 +22,6 @@ cookies.txt
 
 # ZCode 工具运行数据
 .zcode/
+
+# macOS
+.DS_Store

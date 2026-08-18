@@ -88,7 +88,7 @@ func TestLogUsageStats(t *testing.T) {
 	insertLogs(t, s, 1, "gpt-4o", 200, day3)        // 次日 00:00
 
 	// 1) 全量：按 day×model 分组与合计
-	stats, err := s.LogUsageStats(ctx, LogFilter{})
+	stats, err := s.LogUsageStats(ctx, LogFilter{}, time.UTC)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,7 +114,7 @@ func TestLogUsageStats(t *testing.T) {
 	// 2) 时间范围：from 排除更早日期、to 含 to 当天（To 为排他值，传 to 次日零点）
 	from := time.Date(2026, 8, 10, 0, 0, 0, 0, time.UTC)
 	to := time.Date(2026, 8, 11, 0, 0, 0, 0, time.UTC) // 排他：ts < 8-11 零点 ⇒ 含 8-10 整天
-	stats, err = s.LogUsageStats(ctx, LogFilter{From: &from, To: &to})
+	stats, err = s.LogUsageStats(ctx, LogFilter{From: &from, To: &to}, time.UTC)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,12 +124,39 @@ func TestLogUsageStats(t *testing.T) {
 
 	// 3) 组合现有筛选仍生效：deepseek+2xx+from(8-09 零点起) → 只剩 8-09 的 3 次（8-10 的 deepseek 是 404 被滤掉）
 	from = time.Date(2026, 8, 9, 0, 0, 0, 0, time.UTC)
-	stats, err = s.LogUsageStats(ctx, LogFilter{Model: "deepseek", Status: "2xx", From: &from})
+	stats, err = s.LogUsageStats(ctx, LogFilter{Model: "deepseek", Status: "2xx", From: &from}, time.UTC)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(stats) != 1 || stats[0].Day != "2026-08-09" || stats[0].Requests != 3 {
 		t.Fatalf("deepseek+2xx+from 应只余 8-09 的 3 次，got %+v", stats)
+	}
+}
+
+// LogUsageStats 按传入时区（+8）分桶：UTC 16:30 → 本地跨日归 8-11。
+func TestLogUsageStatsLocation(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	// 写入 UTC 2026-08-10 16:30 → +8 本地 8-11 00:30，应归到 8-11
+	insertLogs(t, s, 1, "deepseek-chat", 200, time.Date(2026, 8, 10, 16, 30, 0, 0, time.UTC))
+	shanghai, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stats, err := s.LogUsageStats(ctx, LogFilter{}, shanghai)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stats) != 1 || stats[0].Day != "2026-08-11" || stats[0].Model != "deepseek-chat" {
+		t.Fatalf("+8 时区应把 8-10 16:30 UTC 归入 8-11，got %+v", stats)
+	}
+	// UTC 时区则仍是 8-10
+	stats, err = s.LogUsageStats(ctx, LogFilter{}, time.UTC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stats) != 1 || stats[0].Day != "2026-08-10" {
+		t.Fatalf("UTC 时区应归 8-10，got %+v", stats)
 	}
 }
 
@@ -205,7 +232,7 @@ func TestRequestLogCacheHit(t *testing.T) {
 	}
 
 	// LogUsageStats：同日同模型分组，行内 CacheHits 正确
-	stats, err := s.LogUsageStats(ctx, LogFilter{})
+	stats, err := s.LogUsageStats(ctx, LogFilter{}, time.UTC)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -283,7 +310,10 @@ func TestExportImportRoundTrip(t *testing.T) {
 	// 造数据
 	uid, _ := s.CreateUser(ctx, "admin", "hash-a", "admin")
 	uid2, _ := s.CreateUser(ctx, "bob", "hash-b", "user")
-	_, _ = s.CreateToken(ctx, uid, "t1", "kh1", []string{"deepseek-chat"}, false)
+	t1, _ := s.CreateToken(ctx, uid, "t1", "kh1", []string{"deepseek-chat"}, false)
+	if err := s.SetTokenGroup(ctx, t1, "生产"); err != nil {
+		t.Fatal(err)
+	}
 	_, _ = s.CreateToken(ctx, uid2, "t2", "kh2", nil, true)
 	chID, _ := s.CreateChannel(ctx, "deepseek 主号", "openai", "https://api.deepseek.com")
 	_, _ = s.AddChannelKey(ctx, chID, "enc:abc")
@@ -298,7 +328,7 @@ func TestExportImportRoundTrip(t *testing.T) {
 	}
 	// 导出文件应包含关键内容
 	js := string(data)
-	for _, want := range []string{`"username": "admin"`, `"key_enc": "enc:abc"`, `"deepseek-chat"`, `"model_whitelist"`} {
+	for _, want := range []string{`"username": "admin"`, `"key_enc": "enc:abc"`, `"deepseek-chat"`, `"model_whitelist"`, `"group": "生产"`} {
 		if !strings.Contains(js, want) {
 			t.Errorf("导出文件缺少 %s", want)
 		}
@@ -315,6 +345,14 @@ func TestExportImportRoundTrip(t *testing.T) {
 	tokens, _ := s.ListTokens(ctx)
 	if len(tokens) != 2 {
 		t.Errorf("令牌应恢复 2 个，got %d", len(tokens))
+	}
+	for _, tk := range tokens {
+		if tk.Name == "t1" && tk.Group != "生产" {
+			t.Errorf("t1 恢复后分组应为「生产」，got %q", tk.Group)
+		}
+		if tk.Name == "t2" && tk.Group != "" {
+			t.Errorf("t2 恢复后分组应为空，got %q", tk.Group)
+		}
 	}
 	channels, _ := s.ListChannels(ctx)
 	if len(channels) != 1 || channels[0].BaseURL != "https://api.deepseek.com" {

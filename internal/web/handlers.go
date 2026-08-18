@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"sort"
 	"strconv"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 
@@ -116,10 +117,10 @@ func (s *Server) tokensPage(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	tokens, _ := s.store.ListTokens(ctx)
 	s.render(w, r, "tokens.html", baseData("令牌管理 · 智能 API 网关", "tokens", map[string]any{
-		"Flash":   s.readFlash(w, r),
-		"Tokens":  tokenViews(tokens),
-		"Models":  modelOptions(ctx, s.store),
-		"BaseURL": baseURL(r),
+		"Flash":       s.readFlash(w, r),
+		"TokenGroups": tokenGroups(tokenViews(tokens)),
+		"Models":      modelOptions(ctx, s.store),
+		"BaseURL":     baseURL(r),
 	}))
 }
 
@@ -138,6 +139,62 @@ func tokenViews(tokens []store.Token) []tokenView {
 	return views
 }
 
+// tokenGroupView 令牌列表的一组分节：Name 为展示名（空分组=「默认分组」）。
+type tokenGroupView struct {
+	Name   string
+	Tokens []tokenView
+}
+
+// tokenGroups 按分组对令牌分节：无分组（group 为空）归入「默认分组」并排最前，其余按组名排序。
+func tokenGroups(toks []tokenView) []tokenGroupView {
+	byGroup := map[string][]tokenView{}
+	groups := []string{}
+	for _, t := range toks {
+		g := t.Group
+		if _, ok := byGroup[g]; !ok {
+			groups = append(groups, g)
+		}
+		byGroup[g] = append(byGroup[g], t)
+	}
+	sort.Slice(groups, func(i, j int) bool {
+		if groups[i] == "" {
+			return true
+		}
+		if groups[j] == "" {
+			return false
+		}
+		return groups[i] < groups[j]
+	})
+	out := make([]tokenGroupView, 0, len(groups))
+	for _, g := range groups {
+		name := g
+		if name == "" {
+			name = "默认分组"
+		}
+		out = append(out, tokenGroupView{Name: name, Tokens: byGroup[g]})
+	}
+	return out
+}
+
+// newTokenView 新建/复制令牌后同响应展示的明文（一条 = 一个令牌）。
+type newTokenView struct {
+	Name  string
+	Plain string
+}
+
+// renderTokensPage 渲染令牌管理页（Tokens 按组分节；NewTokens 非空时展示新令牌明文）。
+func (s *Server) renderTokensPage(w http.ResponseWriter, r *http.Request, newTokens []newTokenView) {
+	ctx := r.Context()
+	tokens, _ := s.store.ListTokens(ctx)
+	s.render(w, r, "tokens.html", baseData("令牌管理 · 智能 API 网关", "tokens", map[string]any{
+		"Flash":       s.readFlash(w, r),
+		"TokenGroups": tokenGroups(tokenViews(tokens)),
+		"NewTokens":   newTokens,
+		"Models":      modelOptions(ctx, s.store),
+		"BaseURL":     baseURL(r),
+	}))
+}
+
 func tokenWhitelistJSON(t store.Token) string {
 	b, err := json.Marshal(t.ModelWhitelist)
 	if err != nil {
@@ -147,22 +204,17 @@ func tokenWhitelistJSON(t store.Token) string {
 }
 
 // createToken POST /admin/tokens
-// 支持两种来源：令牌页表单（name + models 多选 / allow_all），
-// 以及模型页「建令牌」一键直达（model 参数预填白名单，名称为空时自动命名）。
+// 来源：令牌页表单（name + models 多选 / allow_all / group）。
+// （模型页多选建令牌改走 /admin/tokens/batch，原 model 一键直达入口由该接口承接。）
 func (s *Server) createToken(w http.ResponseWriter, r *http.Request) {
 	name := r.FormValue("name")
 	allowAll := r.FormValue("allow_all") == "on"
+	group := r.FormValue("group")
 
 	// 白名单：弹窗多选提交多个 models 值；兼容旧的逗号分隔单字段。
 	var models []string
 	for _, v := range r.Form["models"] {
 		models = append(models, splitModels(v)...)
-	}
-	if len(models) == 0 && r.FormValue("model") != "" {
-		models = []string{r.FormValue("model")}
-		if name == "" {
-			name = r.FormValue("model") + " 令牌"
-		}
 	}
 
 	if name == "" {
@@ -183,20 +235,110 @@ func (s *Server) createToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	user := s.currentUser(w, r)
-	if _, err := s.store.CreateToken(r.Context(), user.ID, name, auth.HashToken(plain), models, allowAll); err != nil {
+	newID, err := s.store.CreateToken(r.Context(), user.ID, name, auth.HashToken(plain), models, allowAll)
+	if err != nil {
 		s.setFlash(w, r, "保存令牌失败: "+err.Error())
 		http.Redirect(w, r, "/admin/tokens", http.StatusFound)
 		return
 	}
+	if group != "" {
+		if err := s.store.SetTokenGroup(r.Context(), newID, group); err != nil {
+			s.setFlash(w, r, "设置分组失败: "+err.Error())
+			http.Redirect(w, r, "/admin/tokens", http.StatusFound)
+			return
+		}
+	}
 
-	ctx := r.Context()
-	tokens, _ := s.store.ListTokens(ctx)
-	s.render(w, r, "tokens.html", baseData("令牌管理 · 智能 API 网关", "tokens", map[string]any{
-		"Tokens":   tokenViews(tokens),
-		"NewToken": plain,
-		"Models":   modelOptions(ctx, s.store),
-		"BaseURL":  baseURL(r),
-	}))
+	s.renderTokensPage(w, r, []newTokenView{{Name: name, Plain: plain}})
+}
+
+// createTokensFromModels POST /admin/tokens/batch（模型页多选建令牌）：
+// 每个选中模型各建一个令牌（whitelist=[该模型]、自动命名「X 令牌」、默认分组），
+// 全部明文同响应逐个展示。
+func (s *Server) createTokensFromModels(w http.ResponseWriter, r *http.Request) {
+	_ = r.ParseForm()
+	models := r.Form["model"]
+	var modelsFlat []string
+	for _, v := range models {
+		modelsFlat = append(modelsFlat, splitModels(v)...)
+	}
+	if len(modelsFlat) == 0 {
+		s.setFlash(w, r, "请先勾选要建令牌的模型")
+		http.Redirect(w, r, "/admin/tokens", http.StatusFound)
+		return
+	}
+	user := s.currentUser(w, r)
+	newTokens := make([]newTokenView, 0, len(modelsFlat))
+	for _, m := range modelsFlat {
+		plain, err := auth.GenerateToken()
+		if err != nil {
+			s.setFlash(w, r, "生成令牌失败: "+err.Error())
+			http.Redirect(w, r, "/admin/tokens", http.StatusFound)
+			return
+		}
+		if _, err := s.store.CreateToken(r.Context(), user.ID, m+" 令牌", auth.HashToken(plain), []string{m}, false); err != nil {
+			s.setFlash(w, r, "保存令牌失败: "+err.Error())
+			http.Redirect(w, r, "/admin/tokens", http.StatusFound)
+			return
+		}
+		newTokens = append(newTokens, newTokenView{Name: m + " 令牌", Plain: plain})
+	}
+	s.renderTokensPage(w, r, newTokens)
+}
+
+// setTokenGroup POST /admin/tokens/{id}/group：更新令牌分组（空=归入默认分组）。
+func (s *Server) setTokenGroup(w http.ResponseWriter, r *http.Request) {
+	id, _ := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if _, err := s.store.GetTokenByID(r.Context(), id); err != nil {
+		s.setFlash(w, r, "令牌不存在")
+		http.Redirect(w, r, "/admin/tokens", http.StatusFound)
+		return
+	}
+	if err := s.store.SetTokenGroup(r.Context(), id, strings.TrimSpace(r.FormValue("group"))); err != nil {
+		s.setFlash(w, r, "修改分组失败: "+err.Error())
+	} else {
+		s.setFlash(w, r, "分组已更新")
+	}
+	http.Redirect(w, r, "/admin/tokens", http.StatusFound)
+}
+
+// copyToken POST /admin/tokens/{id}/copy：复制现有令牌的白名单/分组配置生成新令牌，
+// 新令牌明文仅展示一次（同 createToken 的 NewTokens 区块）。名称空则默认「原名 副本」。
+func (s *Server) copyToken(w http.ResponseWriter, r *http.Request) {
+	id, _ := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	src, err := s.store.GetTokenByID(r.Context(), id)
+	if err != nil {
+		s.setFlash(w, r, "令牌不存在")
+		http.Redirect(w, r, "/admin/tokens", http.StatusFound)
+		return
+	}
+	name := r.FormValue("name")
+	if name == "" {
+		name = src.Name + " 副本"
+	}
+	plain, err := auth.GenerateToken()
+	if err != nil {
+		s.setFlash(w, r, "生成令牌失败: "+err.Error())
+		http.Redirect(w, r, "/admin/tokens", http.StatusFound)
+		return
+	}
+	user := s.currentUser(w, r)
+	newID, err := s.store.CreateToken(r.Context(), user.ID, name, auth.HashToken(plain), src.ModelWhitelist, src.AllowAll)
+	if err != nil {
+		s.setFlash(w, r, "保存令牌失败: "+err.Error())
+		http.Redirect(w, r, "/admin/tokens", http.StatusFound)
+		return
+	}
+	// 复制沿用源令牌分组
+	if src.Group != "" {
+		if err := s.store.SetTokenGroup(r.Context(), newID, src.Group); err != nil {
+			s.setFlash(w, r, "设置分组失败: "+err.Error())
+			http.Redirect(w, r, "/admin/tokens", http.StatusFound)
+			return
+		}
+	}
+
+	s.renderTokensPage(w, r, []newTokenView{{Name: name, Plain: plain}})
 }
 
 // baseURL 从请求推导网关对外地址：优先取反向代理的 X-Forwarded-Proto，否则按 TLS 判断。

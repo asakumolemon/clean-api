@@ -28,6 +28,7 @@ type Config struct {
 	ModelRedirects         map[string]string `json:"model_redirects"`               // 全局模型重定向：请求模型名 → 实际模型名（M5 起使用）
 	CacheEnabled           *bool             `json:"cache_enabled"`                 // 响应缓存开关（默认开；重复的非流式请求直接返回缓存响应，省上游调用；M7 后起使用）
 	CacheTTLSec            int               `json:"cache_ttl_seconds"`             // 响应缓存 TTL 秒（默认 300，M7 后起使用）
+	Timezone               string            `json:"timezone"`                      // 管理面时间展示时区（IANA 名，如 Asia/Shanghai；默认服务器本地时区，M7 后起使用）
 }
 
 // Load 从 JSON 文件读取配置并叠加默认值与环境变量覆盖。
@@ -138,5 +139,8 @@ func (c *Config) applyEnv() {
 	}
 	if v := get("CACHE_TTL_SECONDS"); v != "" {
 		fmt.Sscanf(v, "%d", &c.CacheTTLSec)
+	}
+	if v := get("TIMEZONE"); v != "" {
+		c.Timezone = v
 	}
 }

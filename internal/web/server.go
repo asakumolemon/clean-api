@@ -5,6 +5,7 @@ import (
 	"html/template"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -23,13 +24,23 @@ type Server struct {
 	router  *router.Router
 	version string
 	tpl     *template.Template
+	loc     *time.Location // 管理面时间展示时区（空时区名时用服务器本地）
 }
 
-// New 解析内嵌模板并构造管理面服务。version 展示在侧栏（-ldflags 注入）。
-func New(s *store.Store, am *auth.SessionManager, chm *channel.Manager, rt *router.Router, version string) (*Server, error) {
+// New 解析内嵌模板并构造管理面服务。version 展示在侧栏（-ldflags 注入）；
+// tz 为 IANA 时区名（如 "Asia/Shanghai"），空或无效时回退服务器本地时区。
+func New(s *store.Store, am *auth.SessionManager, chm *channel.Manager, rt *router.Router, version, tz string) (*Server, error) {
+	loc := time.Local
+	if tz != "" {
+		if l, err := time.LoadLocation(tz); err == nil {
+			loc = l
+		}
+	}
 	tpl, err := template.New("").Funcs(template.FuncMap{
 		"add": func(a, b int) int { return a + b },
 		"sub": func(a, b int) int { return a - b },
+		// localtime 按管理面时区格式化时间（模板内时间均为 UTC，展示需本地化）。
+		"localtime": func(t time.Time, layout string) string { return t.In(loc).Format(layout) },
 	}).ParseFS(webassets.FS, "templates/*.html")
 	if err != nil {
 		return nil, err
@@ -37,7 +48,7 @@ func New(s *store.Store, am *auth.SessionManager, chm *channel.Manager, rt *rout
 	if version == "" {
 		version = "dev"
 	}
-	return &Server{store: s, auth: am, chm: chm, router: rt, version: version, tpl: tpl}, nil
+	return &Server{store: s, auth: am, chm: chm, router: rt, version: version, tpl: tpl, loc: loc}, nil
 }
 
 // Mount 注册 /admin 路由。
@@ -63,7 +74,10 @@ func (s *Server) Mount(r chi.Router) {
 			r.Use(s.adminOnly)
 			r.Get("/tokens", s.tokensPage)
 			r.Post("/tokens", s.createToken)
+			r.Post("/tokens/batch", s.createTokensFromModels)
 			r.Post("/tokens/{id}/toggle", s.toggleToken)
+			r.Post("/tokens/{id}/copy", s.copyToken)
+			r.Post("/tokens/{id}/group", s.setTokenGroup)
 			r.Post("/tokens/{id}/whitelist", s.updateTokenWhitelist)
 			r.Post("/tokens/{id}/revoke", s.revokeToken)
 			r.Get("/channels", s.channelsPage)

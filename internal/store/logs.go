@@ -33,7 +33,7 @@ type LogFilter struct {
 	To     *time.Time // 止（排他，UTC，To 当日 24:00）；空=不限
 }
 
-// UsageRow 按天×模型分组的用量统计行（Day 为 UTC 日期 YYYY-MM-DD）。
+// UsageRow 按天×模型分组的用量统计行（Day 为本地日期 YYYY-MM-DD，按传入时区分桶）。
 type UsageRow struct {
 	Day              string
 	Model            string
@@ -148,17 +148,23 @@ func logFilterWhere(f LogFilter) (string, []any) {
 	return where, args
 }
 
-// LogUsageStats 按天×模型统计请求数与 token 用量（日期按 UTC，即 ts 文本前缀 YYYY-MM-DD）。
+// LogUsageStats 按天×模型统计请求数与 token 用量（按 loc 时区分桶，默认 UTC）。
 // 说明：modernc 驱动默认把 time.Time 以 Go t.String() 文本写入（如 "2026-08-10 12:00:00 +0000 UTC"），
-// SQLite 的 date()/strftime() 无法解析该格式（返回 NULL），故取文本前 10 位作为日期，与写入格式一致。
-func (s *Store) LogUsageStats(ctx context.Context, f LogFilter) ([]UsageRow, error) {
+// SQLite 的 date()/strftime() 无法解析该完整格式（返回 NULL），故先取文本前 19 位（YYYY-MM-DD HH:MM:SS，
+// 标准格式可解析），再按 loc 当前偏移秒做 datetime 平移后取前 10 位作为本地日期。自托管单时区场景足够。
+func (s *Store) LogUsageStats(ctx context.Context, f LogFilter, loc *time.Location) ([]UsageRow, error) {
 	where, args := logFilterWhere(f)
+	offsetSec := 0
+	if loc != nil {
+		_, offsetSec = time.Now().In(loc).Zone()
+	}
+	shift := fmt.Sprintf("%+d seconds", offsetSec)
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT COALESCE(substr(ts, 1, 10), '') AS day, COALESCE(model,''), COUNT(*),
+		SELECT COALESCE(substr(datetime(substr(ts, 1, 19), printf('%+d seconds', ?)), 1, 10), '') AS day, COALESCE(model,''), COUNT(*),
 		       COALESCE(SUM(cache_hit),0), COALESCE(SUM(prompt_tokens),0), COALESCE(SUM(completion_tokens),0)
 		FROM request_logs`+where+`
-		GROUP BY substr(ts, 1, 10), model
-		ORDER BY day DESC, COUNT(*) DESC, model`, args...)
+		GROUP BY day, model
+		ORDER BY day DESC, COUNT(*) DESC, model`, append([]any{shift}, args...)...)
 	if err != nil {
 		return nil, err
 	}

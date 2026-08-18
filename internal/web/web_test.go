@@ -45,6 +45,12 @@ func fakeUpstream(t *testing.T) *httptest.Server {
 
 func newTestWeb(t *testing.T, up *httptest.Server) (*httptest.Server, *store.Store, *http.Client) {
 	t.Helper()
+	return newTestWebTZ(t, up, "")
+}
+
+// newTestWebTZ 同 newTestWeb，但可指定管理面展示时区（tz）。
+func newTestWebTZ(t *testing.T, up *httptest.Server, tz string) (*httptest.Server, *store.Store, *http.Client) {
+	t.Helper()
 	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -64,7 +70,7 @@ func newTestWeb(t *testing.T, up *httptest.Server) (*httptest.Server, *store.Sto
 	chm := channel.NewManager(st, enc, 10*time.Second)
 	rt := router.New(st, chm, "random", 10*time.Second, nil)
 
-	srv, err := New(st, am, chm, rt, "test")
+	srv, err := New(st, am, chm, rt, "test", tz)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -884,7 +890,7 @@ func TestTokenCreateOneClick(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	resp, err := client.PostForm(ts.URL+"/admin/tokens", url.Values{"model": {"alias-name"}})
+	resp, err := client.PostForm(ts.URL+"/admin/tokens/batch", url.Values{"model": {"alias-name"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1049,7 +1055,7 @@ func TestTokenEditWhitelist(t *testing.T) {
 	n, _ := resp.Body.Read(body)
 	resp.Body.Close()
 	html := string(body[:n])
-	for _, s := range []string{"编辑模型", "edit-models-modal", "edit-form", "openEditModal", "模型已不在可用列表（被禁用或删除）"} {
+	for _, s := range []string{"编辑模型", "edit-models-modal", "edit-form", "openEditModal", "window.openEditModal = openEditModal", "模型已不在可用列表（被禁用或删除）"} {
 		if !strings.Contains(html, s) {
 			t.Errorf("令牌页应包含编辑白名单元素 %q", s)
 		}
@@ -1096,6 +1102,346 @@ func TestTokenEditWhitelist(t *testing.T) {
 	if !tok.AllowAll || len(tok.ModelWhitelist) != 0 {
 		t.Errorf("勾选允许全部后应 AllowAll=true 且清空白名单，got %+v", tok)
 	}
+}
+
+// 复制令牌：POST /admin/tokens/{id}/copy 沿用原白名单与允许全部生成新令牌，
+// 名称默认「原名 副本」，明文同响应展示一次。
+func TestTokenCopy(t *testing.T) {
+	up := fakeUpstream(t)
+	defer up.Close()
+	ts, st, client := newTestWeb(t, up)
+	ctx := context.Background()
+	drain := func(resp *http.Response) {
+		t.Helper()
+		body := make([]byte, 2<<20)
+		_, _ = resp.Body.Read(body)
+		_ = resp.Body.Close()
+	}
+
+	admin, err := st.GetUserByUsername(ctx, "admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srcID, err := st.CreateToken(ctx, admin.ID, "原令牌", auth.HashToken("plain-secret"),
+		[]string{"model-a", "model-b"}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 令牌页应含复制表单（action 指向 /copy，带默认名称 data-default-name）
+	resp, err := client.Get(ts.URL + "/admin/tokens")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := make([]byte, 2<<20)
+	n, _ := resp.Body.Read(body)
+	resp.Body.Close()
+	html := string(body[:n])
+	for _, s := range []string{"复制", `action="/admin/tokens/` + itoa64(srcID) + `/copy"`, "copy-form", "data-default-name=\"原令牌 副本\"", "prompt"} {
+		if !strings.Contains(html, s) {
+			t.Errorf("令牌页应包含复制元素 %q", s)
+		}
+	}
+
+	// 带名字复制 → 200 渲染（含 NewToken 明文块），新令牌与源配置一致
+	r, err := client.PostForm(ts.URL+"/admin/tokens/"+itoa64(srcID)+"/copy", url.Values{"name": {"复制令牌"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := make([]byte, 2<<20)
+	n, _ = r.Body.Read(b)
+	r.Body.Close()
+	html = string(b[:n])
+	if !strings.Contains(html, "令牌已生成，仅显示一次") {
+		t.Error("复制后应同响应展示新令牌明文块")
+	}
+	if loc := r.Header.Get("Location"); loc != "" {
+		t.Fatalf("复制不应 302（明文只展示一次），got %q", loc)
+	}
+	toks, _ := st.ListTokens(ctx)
+	if len(toks) != 2 {
+		t.Fatalf("复制后应有 2 个令牌，got %d", len(toks))
+	}
+	var copyTok store.Token
+	for _, tk := range toks {
+		if tk.ID != srcID {
+			copyTok = tk
+		}
+	}
+	if copyTok.ID == 0 {
+		t.Fatal("未找到复制出的新令牌")
+	}
+	if copyTok.Name != "复制令牌" {
+		t.Errorf("复制令牌名称应为「复制令牌」，got %q", copyTok.Name)
+	}
+	if !slicesEqual(copyTok.ModelWhitelist, []string{"model-a", "model-b"}) || copyTok.AllowAll || !copyTok.Enabled {
+		t.Errorf("复制令牌应沿用原白名单且启用，got %+v", copyTok)
+	}
+	if copyTok.KeyHash == auth.HashToken("plain-secret") {
+		t.Error("复制令牌不应复用原明文哈希")
+	}
+
+	// 不带名字复制 → 名称兜底「原名 副本」
+	r, err = client.PostForm(ts.URL+"/admin/tokens/"+itoa64(srcID)+"/copy", url.Values{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	drain(r)
+	all, _ := st.ListTokens(ctx)
+	found := false
+	for _, tk := range all {
+		if tk.Name == "原令牌 副本" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("不带名字复制应兜底命名「原令牌 副本」")
+	}
+
+	// 复制 allow_all 令牌 → 新令牌同样 AllowAll
+	allID, err := st.CreateToken(ctx, admin.ID, "全放行", auth.HashToken("x"), nil, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err = client.PostForm(ts.URL+"/admin/tokens/"+itoa64(allID)+"/copy", url.Values{"name": {"全放行副本"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	drain(r)
+	allToks, _ := st.ListTokens(ctx)
+	seen := false
+	for _, tk := range allToks {
+		if tk.Name == "全放行副本" {
+			seen = true
+			if !tk.AllowAll || len(tk.ModelWhitelist) != 0 {
+				t.Errorf("复制 allow_all 令牌应同样 AllowAll 且空白名单，got %+v", tk)
+			}
+		}
+	}
+	if !seen {
+		t.Error("allow_all 令牌复制应生成「全放行副本」")
+	}
+
+	// 复制不存在的令牌 → 302 /admin/tokens + flash
+	r, err = client.PostForm(ts.URL+"/admin/tokens/99999/copy", url.Values{"name": {"x"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	drain(r)
+	if loc := r.Header.Get("Location"); loc != "/admin/tokens" {
+		t.Fatalf("复制不存在令牌应 302 /admin/tokens，got %q", loc)
+	}
+}
+
+// 令牌分组：创建带分组令牌 → 令牌页按组分节展示，库中 group 正确。
+func TestTokenGroupCreate(t *testing.T) {
+	up := fakeUpstream(t)
+	defer up.Close()
+	ts, st, client := newTestWeb(t, up)
+	ctx := context.Background()
+
+	admin, err := st.GetUserByUsername(ctx, "admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	drain := func(resp *http.Response) {
+		t.Helper()
+		body := make([]byte, 2<<20)
+		_, _ = resp.Body.Read(body)
+		_ = resp.Body.Close()
+	}
+
+	// 令牌页表单创建：name + models + group
+	r, err := client.PostForm(ts.URL+"/admin/tokens", url.Values{
+		"name":   {"测试令牌"},
+		"models": {"model-a"},
+		"group":  {"测试"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	drain(r)
+	toks, _ := st.ListTokens(ctx)
+	if len(toks) != 1 || toks[0].Group != "测试" {
+		t.Fatalf("建令牌应带分组「测试」，got %+v", toks)
+	}
+
+	// 令牌页应分节展示：默认分组 + 测试分组
+	for _, s := range []string{"默认分组", "测试", "group-form", "改"} {
+		if !strings.Contains(mustGet(t, client, ts.URL+"/admin/tokens"), s) {
+			t.Errorf("令牌页应包含分组元素 %q", s)
+		}
+	}
+
+	// 默认分组令牌
+	_, _ = st.CreateToken(ctx, admin.ID, "默认令牌", auth.HashToken("h2"), []string{"model-a"}, false)
+	html := mustGet(t, client, ts.URL+"/admin/tokens")
+	if !strings.Contains(html, "默认令牌") || !strings.Contains(html, "测试令牌") {
+		t.Error("两类分组令牌都应展示")
+	}
+}
+
+// 令牌分组编辑：改分组 → 库中 group 更新；改空 → 归默认分组。
+func TestTokenGroupEdit(t *testing.T) {
+	up := fakeUpstream(t)
+	defer up.Close()
+	ts, st, client := newTestWeb(t, up)
+	ctx := context.Background()
+
+	admin, err := st.GetUserByUsername(ctx, "admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tid, err := st.CreateToken(ctx, admin.ID, "令牌", auth.HashToken("h1"), nil, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	r, err := client.PostForm(ts.URL+"/admin/tokens/"+itoa64(tid)+"/group", url.Values{"group": {"生产"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loc := r.Header.Get("Location"); loc != "/admin/tokens" {
+		t.Fatalf("改分组应 302 /admin/tokens，got %q", loc)
+	}
+	r.Body.Close()
+	tok, _ := st.GetTokenByID(ctx, tid)
+	if tok.Group != "生产" {
+		t.Fatalf("改分组后 group 应为「生产」，got %q", tok.Group)
+	}
+
+	// 改空 → 默认分组
+	r, err = client.PostForm(ts.URL+"/admin/tokens/"+itoa64(tid)+"/group", url.Values{"group": {""}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Body.Close()
+	tok, _ = st.GetTokenByID(ctx, tid)
+	if tok.Group != "" {
+		t.Fatalf("改空分组应归默认分组（group=''），got %q", tok.Group)
+	}
+}
+
+// 模型多选建令牌：POST /admin/tokens/batch 每模型各建一令牌（whitelist=该模型、自动命名）。
+func TestTokensBatchCreate(t *testing.T) {
+	up := fakeUpstream(t)
+	defer up.Close()
+	ts, st, client := newTestWeb(t, up)
+	ctx := context.Background()
+
+	r, err := client.PostForm(ts.URL+"/admin/tokens/batch", url.Values{
+		"model": {"gpt-4o", "claude-3.5"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.StatusCode != http.StatusOK {
+		t.Fatalf("批量建令牌应 200 渲染，got %d", r.StatusCode)
+	}
+	body := make([]byte, 2<<20)
+	n, _ := r.Body.Read(body)
+	r.Body.Close()
+	html := string(body[:n])
+	for _, s := range []string{"已生成 2 个令牌", "gpt-4o 令牌", "claude-3.5 令牌", "new-token-plain-"} {
+		if !strings.Contains(html, s) {
+			t.Errorf("批量生成后页面应包含 %q", s)
+		}
+	}
+
+	toks, _ := st.ListTokens(ctx)
+	if len(toks) != 2 {
+		t.Fatalf("应创建 2 个令牌，got %d", len(toks))
+	}
+	byName := map[string]store.Token{}
+	for _, tk := range toks {
+		byName[tk.Name] = tk
+	}
+	for _, m := range []string{"gpt-4o", "claude-3.5"} {
+		tk, ok := byName[m+" 令牌"]
+		if !ok {
+			t.Fatalf("缺少 %s 令牌", m)
+		}
+		if len(tk.ModelWhitelist) != 1 || tk.ModelWhitelist[0] != m || tk.AllowAll {
+			t.Errorf("%s 令牌白名单应=[%s]，got %+v", m, m, tk.ModelWhitelist)
+		}
+	}
+
+	// 空选择 → 302 回令牌页
+	r, err = client.PostForm(ts.URL+"/admin/tokens/batch", url.Values{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Body.Close()
+	if loc := r.Header.Get("Location"); loc != "/admin/tokens" {
+		t.Fatalf("空选择应 302 /admin/tokens，got %q", loc)
+	}
+}
+
+// 模型管理页：多选 checkbox + 搜索右侧「建令牌」按钮，且已无每行建令牌表单。
+func TestModelsPageMultiSelect(t *testing.T) {
+	up := fakeUpstream(t)
+	defer up.Close()
+	ts, st, client := newTestWeb(t, up)
+	ctx := context.Background()
+
+	chID, err := st.CreateChannel(ctx, "渠道", "openai", up.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = st.AddChannelKey(ctx, chID, "sk-test")
+	if _, err := st.SyncModels(ctx, chID, map[string]store.Capabilities{
+		"real-name": {}, "m2": {},
+	}, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+
+	html := mustGet(t, client, ts.URL+"/admin/models")
+	for _, s := range []string{"model-select-all", "model-select", "batch-create-token", "/admin/tokens/batch"} {
+		if !strings.Contains(html, s) {
+			t.Errorf("模型页应包含多选/批量元素 %q", s)
+		}
+	}
+	// 已无每行建令牌表单（不再直接 POST /admin/tokens 带 model）
+	if strings.Contains(html, `action="/admin/tokens"`) {
+		t.Error("模型页不应再有直接 POST /admin/tokens 的每行建令牌表单")
+	}
+}
+
+// 时间本地化：localtime 按管理面时区输出；日志页日期输入按该时区解析。
+func TestLocalTimeFormat(t *testing.T) {
+	up := fakeUpstream(t)
+	defer up.Close()
+	ts, st, client := newTestWebTZ(t, up, "Asia/Shanghai")
+	ctx := context.Background()
+
+	// 日志页：TS=UTC 2026-08-10 14:00 → 上海 22:00，展示 MM-DD HH:MM:SS
+	lut := time.Date(2026, 8, 10, 14, 0, 0, 0, time.UTC)
+	if err := st.InsertRequestLog(ctx, &store.RequestLog{
+		TS: lut, RequestID: "req-1", TokenID: 0, Model: "m", ChannelID: 1,
+		Status: 200, LatencyMS: 1, PromptTokens: 1, CompletionTokens: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	html := mustGet(t, client, ts.URL+"/admin/logs")
+	if !strings.Contains(html, "08-10 22:00:00") {
+		t.Errorf("日志时间应按 Asia/Shanghai 展示 08-10 22:00:00，got:\n%s", html)
+	}
+}
+
+// mustGet 登录后 GET 页面并返回 HTML。
+func mustGet(t *testing.T, client *http.Client, url string) string {
+	t.Helper()
+	resp, err := client.Get(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := make([]byte, 2<<20)
+	n, _ := resp.Body.Read(body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s 应 200，got %d", url, resp.StatusCode)
+	}
+	return string(body[:n])
 }
 
 func itoa64(id int64) string {

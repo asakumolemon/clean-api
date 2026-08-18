@@ -11,6 +11,9 @@
         class="w-72 rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200">
       <button type="submit"
         class="rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100">搜索</button>
+      <!-- 一键建令牌（多选）：收集勾选模型（每模型一个令牌），提交到 /admin/tokens/batch -->
+      <button type="button" id="batch-create-token"
+        class="rounded-md border border-blue-200 bg-blue-50 px-4 py-2 text-sm font-medium text-blue-700 hover:bg-blue-100">建令牌</button>
       {{if .Q}}<a href="/admin/models" class="text-sm text-blue-600 hover:underline">清除搜索</a>{{end}}
     </form>
 
@@ -18,6 +21,7 @@
       <table class="w-full text-sm">
         <thead>
           <tr class="border-b border-slate-200 text-left text-xs uppercase text-slate-500">
+            <th class="px-4 py-3 font-medium"><input type="checkbox" id="model-select-all" title="全选本页" class="h-4 w-4 accent-blue-600"></th>
             <th class="px-4 py-3 font-medium">渠道</th>
             <th class="px-4 py-3 font-medium">模型名</th>
             <th class="px-4 py-3 font-medium">别名</th>
@@ -29,6 +33,10 @@
         <tbody>
           {{range .Models}}
           <tr class="border-b border-slate-100">
+            <td class="px-4 py-3">
+              <input type="checkbox" class="model-select h-4 w-4 accent-blue-600"
+                value="{{if .Alias}}{{.Alias}}{{else}}{{.Name}}{{end}}" title="勾选后点右上「建令牌」">
+            </td>
             <td class="px-4 py-3">{{.ChannelName}}</td>
             <td class="px-4 py-3 font-mono text-xs">{{.Name}}</td>
             <td class="px-4 py-3">
@@ -73,16 +81,10 @@
                 <button type="submit"
                   class="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100">{{if .Enabled}}禁用{{else}}启用{{end}}</button>
               </form>
-              <!-- 一键建令牌：白名单预填该模型对外名（alias 优先），POST 后直接展示令牌明文 -->
-              <form method="post" action="/admin/tokens" class="inline">
-                <input type="hidden" name="model" value="{{if .Alias}}{{.Alias}}{{else}}{{.Name}}{{end}}">
-                <button type="submit"
-                  class="rounded-md border border-blue-200 bg-blue-50 px-3 py-1.5 text-xs font-medium text-blue-700 hover:bg-blue-100">建令牌</button>
-              </form>
             </td>
           </tr>
           {{else}}
-          <tr><td colspan="6" class="px-4 py-8 text-center text-slate-500">{{if .Q}}无匹配模型，换个关键词试试{{else}}暂无模型，先到「渠道管理」添加渠道并等待探测完成{{end}}</td></tr>
+          <tr><td colspan="7" class="px-4 py-8 text-center text-slate-500">{{if .Q}}无匹配模型，换个关键词试试{{else}}暂无模型，先到「渠道管理」添加渠道并等待探测完成{{end}}</td></tr>
           {{end}}
         </tbody>
       </table>
@@ -106,5 +108,46 @@
     </div>
   </main>
 </div>
+
+<script>
+(function () {
+  const selectAll = document.getElementById('model-select-all');
+  const selects = Array.from(document.querySelectorAll('.model-select'));
+  const batchBtn = document.getElementById('batch-create-token');
+  // 全选/取消全选（按当前页生效）
+  if (selectAll) {
+    selectAll.addEventListener('change', function () {
+      selects.forEach(function (c) { c.checked = selectAll.checked; });
+    });
+    selects.forEach(function (c) {
+      c.addEventListener('change', function () {
+        selectAll.checked = selects.every(function (x) { return x.checked; });
+      });
+    });
+  }
+  // 建令牌：收集勾选模型（每模型一个令牌），动态建隐藏表单提交 /admin/tokens/batch
+  if (batchBtn) {
+    batchBtn.addEventListener('click', function () {
+      const checked = selects.filter(function (c) { return c.checked; });
+      if (checked.length === 0) {
+        alert('请先勾选要建令牌的模型');
+        return;
+      }
+      const form = document.createElement('form');
+      form.method = 'post';
+      form.action = '/admin/tokens/batch';
+      checked.forEach(function (c) {
+        const inp = document.createElement('input');
+        inp.type = 'hidden';
+        inp.name = 'model';
+        inp.value = c.value;
+        form.appendChild(inp);
+      });
+      document.body.appendChild(form);
+      form.submit();
+    });
+  }
+})();
+</script>
 </body>
 </html>

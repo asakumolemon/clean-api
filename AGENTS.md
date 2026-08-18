@@ -46,11 +46,15 @@
 ## 令牌配置体验优化（M7 后，方案见 docs/token-ux-research.md）
 
 - **白名单弹窗信息透明（方案 B）**：`enabledModelNames` 升级为 `modelOptions` 视图（`internal/web/handlers.go`）——按对外名（alias 优先）去重分组，统计提供渠道总数与健康（active）渠道数（`ListModels` + `ListChannels` 内存聚合，无新 SQL），能力取各渠道**并集**（白名单按名授权，能力只作展示参考）。弹窗每行显示「N 渠道 · M 可用」（0 可用红字「无可用渠道」）+ 能力标签；筛选栏「只看有可用渠道」+ 能力筛选（data-* 属性 + 原生 JS，`applySearch` 三者叠加，隐藏行勾选不受影响）。
-- **一键建令牌（方案 A）**：模型管理页每行「建令牌」按钮 → POST `/admin/tokens` 带 `model` 参数（对外名，alias 优先）；`createToken` 无 `models` 时以 `model` 预填白名单、名称为空自动命名「X 令牌」。**必须同响应 render 展示明文**（不能 302，否则令牌明文丢失——现有 `NewToken` 区块即该模式）。
+- **一键建令牌（方案 A，已改多选批量）**：早期实现为模型管理页每行「建令牌」按钮 → POST `/admin/tokens` 带 `model` 参数（对外名）预填白名单、名称为空自动命名「X 令牌」；因模型页改为多选 + 搜索右侧批量建令牌（见「模型多选建令牌」决策），该每行入口已移除、`createToken` 不再收 `model`。**生成令牌必须同响应 render 展示明文**（不能 302，否则令牌明文丢失——现有 `NewToken` 区块即该模式）。
 - **按客户端一键复制（方案 C）**：生成令牌后展示块从单一 curl 扩展为四项：OpenAI Chat curl、Anthropic Messages curl（x-api-key + anthropic-version）、Claude Code 三环境变量 shell、NextChat 三要素，各带独立复制按钮（复用 `copyText`，id 唯一）。
 - **测试台下拉去重**：`renderPlayground` 按对外名去重（此前多渠道同模型会重复出现）。
 - **模型页搜索**：`modelsPage` 支持 `?q=` 按模型名/别名/渠道名模糊过滤（store 新增 `ListModelsPageFiltered`/`CountModelsFiltered`，JOIN channels 过滤渠道名，排序与 `ListModelsPage` 一致）；搜索与分页叠加，分页链接与操作表单（alias/override/toggle）均带 hidden `q`，`modelListRedirect` 保留搜索词；空结果显示「无匹配模型」。
 - **令牌编辑白名单**：令牌列表每行「编辑模型」按钮 → 独立编辑弹窗（`#edit-models-modal`，模型行从新建弹窗 cloneNode 复制、按 `WhitelistJSON` 预勾选，`tokenView` 包装 `WhitelistJSON` 字段）→ POST `/admin/tokens/{id}/whitelist`（`updateTokenWhitelist`，复用与创建一致的校验：空白名单必须显式勾选 allow_all）→ store `UpdateTokenWhitelist`（M5 已有）。编辑弹窗的 checkbox 在独立表单内，避免随新建表单提交；新建弹窗的 `applySearch`/`selected` 选择器限定 `#models-modal` 作用域防止互相干扰。白名单中不在弹窗候选（模型被禁用/删除）的项由 JS 动态追加一行并标注「模型已不在可用列表」，避免编辑保存时静默丢弃。
+- **令牌一键复制**：每行「复制」按钮 → POST `/admin/tokens/{id}/copy`（`copyToken`），沿用源令牌的 Whitelist+AllowAll 生成新令牌、归属当前用户、名称空时默认「原名 副本」，**同响应 render 展示新明文**（复用 `NewToken` 区块）。JS 用 `prompt()` 询问新名（默认「原名 副本」）后带 hidden `name` 提交；`openEditModal`/复制处理都挂在 IIFE 内，行内按钮用到的必须先 `window.xxx = ...` 暴露（`openEditModal` 曾漏挂导致 `ReferenceError`）。
+- **令牌分组**：tokens 加 `group TEXT DEFAULT ''` 列（`group` 是 SQLite 关键字，**所有 SQL 里必须反引号** `` `group` ``；新库建表带列、老库 `ensureColumn` 幂等补列）。无分组（空）统一展示为「默认分组」，令牌页按分组**分节**（默认分组排最前，其余按名排序；`tokenGroups` 内存分组）。分组编辑：每行「分组」列 + 「改」按钮 → JS `prompt`（默认当前分组）→ POST `/admin/tokens/{id}/group`（`setTokenGroup`，留空归默认）。创建表单带分组输入框（datalist 提示已有分组，不列「默认分组」伪项）；复制令牌沿用源分组。导出/导入 DTO 带 `group`。
+- **模型多选建令牌**：模型页每行原生「建令牌」**移除**，改为行首 checkbox 多选 + 搜索按钮右侧「建令牌」按钮（`#batch-create-token`，`type=button` JS 收集勾选 → 动态建表单 POST `/admin/tokens/batch`）；`createTokensFromModels` 对每个选中模型各建一个令牌（whitelist=[该模型]、自动命名「X 令牌」、默认分组），**全部明文同响应逐个展示**（`NewTokens []newTokenView` 循环，多令牌只展示明文+复制，单令牌仍保留按客户端一键复制四块）。选择基于当前页（跨页不做）。`createToken` 不再收 `model` 参数（model 一键直达改由 batch 承接）。
+- **时间本地化**：管理面所有时间由原本 UTC 展示改为按 `timezone` 配置（IANA 名，默认服务器本地 `time.Local`，`GATEWAY_TIMEZONE` 可覆盖；`web.New` 加 `tz` 参数 → `Server.loc`）。模板新增 `localtime` 函数（FuncMap 注册，`t.In(loc).Format`），替换 4 处模板 `.Format`（tokens/users/logs/dashboard）+ channels.go 冷却显示改 `s.loc`。日志 `from`/`to` 日期 `ParseInLocation` 按 `s.loc` 解析再转 UTC 比对；`LogUsageStats` 加 `loc` 参数——SQLite 无法解析 Go 时间文本全格式，故 `datetime(substr(ts,1,19), printf('%+d seconds', offsetSec))` 平移后按前 10 位分桶，使按天×模型与日期筛选与展示时区一致（offset 取 loc 当前偏移秒，自托管单时区够用）。
 
 ## 响应缓存与命中率（M7 后）
 

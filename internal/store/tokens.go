@@ -17,6 +17,7 @@ type Token struct {
 	ModelWhitelist []string
 	AllowAll       bool // 显式「允许全部模型」开关，默认关
 	Enabled        bool
+	Group          string // 令牌分组（空=默认分组）
 	CreatedAt      time.Time
 	LastUsedAt     sql.NullTime
 }
@@ -37,24 +38,24 @@ func (s *Store) CreateToken(ctx context.Context, userID int64, name, keyHash str
 }
 
 func (s *Store) GetTokenByHash(ctx context.Context, keyHash string) (*Token, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT id, user_id, name, key_hash, model_whitelist, allow_all, enabled, created_at, last_used_at
+	row := s.db.QueryRowContext(ctx, `SELECT id, user_id, name, key_hash, model_whitelist, allow_all, enabled, `+"`group`"+`, created_at, last_used_at
 		FROM tokens WHERE key_hash = ?`, keyHash)
 	return scanToken(row)
 }
 
 func (s *Store) GetTokenByID(ctx context.Context, id int64) (*Token, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT id, user_id, name, key_hash, model_whitelist, allow_all, enabled, created_at, last_used_at
+	row := s.db.QueryRowContext(ctx, `SELECT id, user_id, name, key_hash, model_whitelist, allow_all, enabled, `+"`group`"+`, created_at, last_used_at
 		FROM tokens WHERE id = ?`, id)
 	return scanToken(row)
 }
 
 func (s *Store) ListTokens(ctx context.Context) ([]Token, error) {
-	return s.listTokens(ctx, `SELECT id, user_id, name, key_hash, model_whitelist, allow_all, enabled, created_at, last_used_at
+	return s.listTokens(ctx, `SELECT id, user_id, name, key_hash, model_whitelist, allow_all, enabled, `+"`group`"+`, created_at, last_used_at
 		FROM tokens ORDER BY id DESC`)
 }
 
 func (s *Store) ListTokensByUser(ctx context.Context, userID int64) ([]Token, error) {
-	return s.listTokens(ctx, `SELECT id, user_id, name, key_hash, model_whitelist, allow_all, enabled, created_at, last_used_at
+	return s.listTokens(ctx, `SELECT id, user_id, name, key_hash, model_whitelist, allow_all, enabled, `+"`group`"+`, created_at, last_used_at
 		FROM tokens WHERE user_id = ? ORDER BY id DESC`, userID)
 }
 
@@ -97,6 +98,12 @@ func (s *Store) DeleteToken(ctx context.Context, id int64) error {
 	return err
 }
 
+// SetTokenGroup 更新令牌分组（空=归入默认分组）。
+func (s *Store) SetTokenGroup(ctx context.Context, id int64, group string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE tokens SET `+"`group`"+` = ? WHERE id = ?`, group, id)
+	return err
+}
+
 // TouchToken 更新最近使用时间。
 func (s *Store) TouchToken(ctx context.Context, id int64) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE tokens SET last_used_at = ? WHERE id = ?`, now(), id)
@@ -127,7 +134,7 @@ func scanTokenRow(sc rowScanner, t *Token) error {
 	var wl string
 	var allowAll int
 	var enabled int
-	if err := sc.Scan(&t.ID, &t.UserID, &t.Name, &t.KeyHash, &wl, &allowAll, &enabled, &t.CreatedAt, &t.LastUsedAt); err != nil {
+	if err := sc.Scan(&t.ID, &t.UserID, &t.Name, &t.KeyHash, &wl, &allowAll, &enabled, &t.Group, &t.CreatedAt, &t.LastUsedAt); err != nil {
 		return err
 	}
 	t.AllowAll = allowAll != 0

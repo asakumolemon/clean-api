@@ -44,7 +44,7 @@ func (s *Server) channelsPage(w http.ResponseWriter, r *http.Request) {
 			kv := keyView{ID: k.ID, Masked: s.chm.MaskKey(k.KeyEnc)}
 			if k.CooldownUntil.Valid {
 				kv.InCooldown = true
-				kv.CooldownUntil = k.CooldownUntil.Time.Format("01-02 15:04")
+				kv.CooldownUntil = k.CooldownUntil.Time.In(s.loc).Format("01-02 15:04")
 			}
 			v.Keys = append(v.Keys, kv)
 		}

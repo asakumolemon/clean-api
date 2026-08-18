@@ -45,7 +45,7 @@
           <tbody>
             {{range .RecentLogs}}
             <tr class="border-b border-slate-100">
-              <td class="px-4 py-3 font-mono text-xs">{{.TS.Format "01-02 15:04:05"}}</td>
+              <td class="px-4 py-3 font-mono text-xs">{{localtime .TS "01-02 15:04:05"}}</td>
               <td class="px-4 py-3">{{.Model}}</td>
               <td class="px-4 py-3">{{.ChannelName}}</td>
               <td class="px-4 py-3">{{.StatusText}}</td>

@@ -132,7 +132,7 @@
         <tbody>
           {{range .Logs}}
           <tr class="border-b border-slate-100">
-            <td class="px-4 py-3 font-mono text-xs whitespace-nowrap">{{.TS.Format "01-02 15:04:05"}}</td>
+            <td class="px-4 py-3 font-mono text-xs whitespace-nowrap">{{localtime .TS "01-02 15:04:05"}}</td>
             <td class="px-4 py-3 font-mono text-xs">{{.RequestID}}</td>
             <td class="px-4 py-3">{{.TokenName}}</td>
             <td class="px-4 py-3">{{.Model}}</td>

@@ -57,10 +57,15 @@
       </details>
     </div>
 
-    {{if .NewToken}}
+    {{$newTokens := .NewTokens}}
+    {{if $newTokens}}
     <div class="mb-6 rounded-lg border-2 border-blue-500 bg-white p-6 shadow-sm">
-      <p class="font-semibold text-slate-900">令牌已生成，仅显示一次，请立即保存：</p>
-      <div class="mt-2 mb-2 rounded-md border border-slate-300 bg-slate-50 p-3 font-mono text-sm break-all">{{.NewToken}}</div>
+      <p class="font-semibold text-slate-900">
+        {{if eq (len $newTokens) 1}}令牌已生成，仅显示一次，请立即保存：{{else}}已生成 {{len $newTokens}} 个令牌，明文仅显示一次，请立即保存：{{end}}
+      </p>
+      {{$single := index $newTokens 0}}
+      {{if eq (len $newTokens) 1}}
+      <div class="mt-2 mb-2 rounded-md border border-slate-300 bg-slate-50 p-3 font-mono text-sm break-all">{{$single.Plain}}</div>
       <small class="text-sm text-slate-500">数据库只保存其 sha256 哈希，关闭本页后无法再次查看。</small>
       <div class="mt-3 space-y-3">
         <p class="text-sm font-medium text-slate-700">按客户端一键复制接入配置：</p>
@@ -69,7 +74,7 @@
           <div class="flex items-start gap-2">
             <pre id="new-token-curl-openai" class="flex-1 overflow-x-auto rounded-md bg-slate-900 p-3 font-mono text-xs leading-relaxed whitespace-pre text-slate-100">curl {{.BaseURL}}/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer {{.NewToken}}" \
+  -H "Authorization: Bearer {{$single.Plain}}" \
   -d '{"model":"&lt;模型名&gt;","messages":[{"role":"user","content":"你好"}]}'</pre>
             <button type="button" id="copy-new-token-openai" onclick="copyText('new-token-curl-openai', 'copy-new-token-openai')"
               class="shrink-0 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100">复制</button>
@@ -80,7 +85,7 @@
           <div class="flex items-start gap-2">
             <pre id="new-token-curl-anthropic" class="flex-1 overflow-x-auto rounded-md bg-slate-900 p-3 font-mono text-xs leading-relaxed whitespace-pre text-slate-100">curl {{.BaseURL}}/v1/messages \
   -H "Content-Type: application/json" \
-  -H "x-api-key: {{.NewToken}}" \
+  -H "x-api-key: {{$single.Plain}}" \
   -H "anthropic-version: 2023-06-01" \
   -d '{"model":"&lt;模型名&gt;","max_tokens":1024,"messages":[{"role":"user","content":"你好"}]}'</pre>
             <button type="button" id="copy-new-token-anthropic" onclick="copyText('new-token-curl-anthropic', 'copy-new-token-anthropic')"
@@ -91,7 +96,7 @@
           <p class="mb-1 text-xs font-medium text-slate-500">Claude Code（三个环境变量，终端执行后可直接使用）</p>
           <div class="flex items-start gap-2">
             <pre id="new-token-shell-claude" class="flex-1 overflow-x-auto rounded-md bg-slate-900 p-3 font-mono text-xs leading-relaxed whitespace-pre text-slate-100">export ANTHROPIC_BASE_URL={{.BaseURL}}
-export ANTHROPIC_AUTH_TOKEN={{.NewToken}}
+export ANTHROPIC_AUTH_TOKEN={{$single.Plain}}
 export ANTHROPIC_MODEL=&lt;模型名&gt;</pre>
             <button type="button" id="copy-new-token-shell" onclick="copyText('new-token-shell-claude', 'copy-new-token-shell')"
               class="shrink-0 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100">复制</button>
@@ -101,13 +106,28 @@ export ANTHROPIC_MODEL=&lt;模型名&gt;</pre>
           <p class="mb-1 text-xs font-medium text-slate-500">NextChat 自定义接口</p>
           <div class="flex items-start gap-2">
             <pre id="new-token-nextchat" class="flex-1 overflow-x-auto rounded-md bg-slate-900 p-3 font-mono text-xs leading-relaxed whitespace-pre text-slate-100">网关地址：{{.BaseURL}}
-API Key：{{.NewToken}}
+API Key：{{$single.Plain}}
 模型：白名单内模型名（如 &lt;模型名&gt;）</pre>
             <button type="button" id="copy-new-token-nextchat" onclick="copyText('new-token-nextchat', 'copy-new-token-nextchat')"
               class="shrink-0 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100">复制</button>
           </div>
         </div>
       </div>
+      {{else}}
+      <p class="mt-1 text-xs text-slate-500">每个令牌白名单各含对应模型，数据库只保存 sha256 哈希，关闭本页后无法再次查看。</p>
+      <div class="mt-3 space-y-3">
+        {{range $newTokens}}
+        <div>
+          <p class="mb-1 text-sm font-medium text-slate-700">「{{.Name}}」</p>
+          <div class="flex items-start gap-2">
+            <pre id="new-token-plain-{{.Plain}}" class="flex-1 overflow-x-auto rounded-md border border-slate-300 bg-slate-50 p-3 font-mono text-xs break-all text-slate-900">{{.Plain}}</pre>
+            <button type="button" id="copy-new-token-plain-{{.Plain}}" onclick="copyText('new-token-plain-{{.Plain}}', 'copy-new-token-plain-{{.Plain}}')"
+              class="shrink-0 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100">复制</button>
+          </div>
+        </div>
+        {{end}}
+      </div>
+      {{end}}
     </div>
     {{end}}
 
@@ -118,6 +138,16 @@ API Key：{{.NewToken}}
           <label for="name" class="mb-1 block text-sm font-medium text-slate-700">名称</label>
           <input id="name" name="name" type="text" placeholder="例如：我的 NextChat"
             class="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200">
+        </div>
+        <div>
+          <label for="group" class="mb-1 block text-sm font-medium text-slate-700">分组（可空，空则归入默认分组）</label>
+          <input id="group" name="group" type="text" list="token-groups" placeholder="例如：测试 / 生产"
+            class="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200">
+          <datalist id="token-groups">
+            {{range .TokenGroups}}
+            {{if ne .Name "默认分组"}}<option value="{{.Name}}"></option>{{end}}
+            {{end}}
+          </datalist>
         </div>
         <div>
           <label class="mb-1 block text-sm font-medium text-slate-700">模型白名单（弹窗多选，至少一个；留空需勾选下方开关）</label>
@@ -217,21 +247,39 @@ API Key：{{.NewToken}}
           <tr class="border-b border-slate-200 text-left text-xs uppercase text-slate-500">
             <th class="px-4 py-3 font-medium">ID</th>
             <th class="px-4 py-3 font-medium">名称</th>
+            <th class="px-4 py-3 font-medium">分组</th>
             <th class="px-4 py-3 font-medium">白名单</th>
             <th class="px-4 py-3 font-medium">状态</th>
             <th class="px-4 py-3 font-medium">最近使用</th>
             <th class="px-4 py-3 font-medium">操作</th>
           </tr>
         </thead>
+        {{range .TokenGroups}}
         <tbody>
+          <tr class="border-b border-slate-200 bg-slate-50">
+            <td colspan="7" class="px-4 py-2 text-xs font-semibold text-slate-500">{{.Name}}（{{len .Tokens}}）</td>
+          </tr>
           {{range .Tokens}}
           <tr class="border-b border-slate-100">
             <td class="px-4 py-3">{{.ID}}</td>
             <td class="px-4 py-3">{{.Name}}</td>
+            <td class="px-4 py-3 whitespace-nowrap">
+              <span class="text-xs">{{if .Group}}{{.Group}}{{else}}默认分组{{end}}</span>
+              <!-- 改分组：prompt 输入新分组名（留空归默认分组）→ 隐藏表单 POST /admin/tokens/{id}/group -->
+              <form method="post" action="/admin/tokens/{{.ID}}/group" class="group-form ml-1 inline" data-current-group="{{.Group}}">
+                <button type="submit"
+                  class="rounded-md border border-slate-300 bg-white px-2 py-1 text-[10px] font-medium text-slate-700 hover:bg-slate-100">改</button>
+              </form>
+            </td>
             <td class="px-4 py-3 font-mono text-xs">{{if .AllowAll}}允许全部{{else}}{{range .ModelWhitelist}}{{.}} {{end}}{{end}}</td>
             <td class="px-4 py-3">{{if .Enabled}}启用{{else}}禁用{{end}}</td>
-            <td class="px-4 py-3">{{if .LastUsedAt.Valid}}{{.LastUsedAt.Time.Format "2006-01-02 15:04"}}{{else}}-{{end}}</td>
+            <td class="px-4 py-3">{{if .LastUsedAt.Valid}}{{localtime .LastUsedAt.Time "2006-01-02 15:04"}}{{else}}-{{end}}</td>
             <td class="px-4 py-3 whitespace-nowrap">
+              <!-- 复制：沿用原令牌的白名单配置生成新令牌，只需换个名字即可直接使用 -->
+              <form method="post" action="/admin/tokens/{{.ID}}/copy" class="copy-form mr-1 inline" data-default-name="{{.Name}} 副本">
+                <button type="submit"
+                  class="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100">复制</button>
+              </form>
               <button type="button" onclick='openEditModal({{.ID}}, {{.WhitelistJSON}}, {{if .AllowAll}}true{{else}}false{{end}})'
                 class="mr-1 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100">编辑模型</button>
               <form method="post" action="/admin/tokens/{{.ID}}/toggle" class="mr-1 inline">
@@ -244,10 +292,13 @@ API Key：{{.NewToken}}
               </form>
             </td>
           </tr>
-          {{else}}
-          <tr><td colspan="6" class="px-4 py-8 text-center text-slate-500">暂无令牌</td></tr>
           {{end}}
         </tbody>
+        {{else}}
+        <tbody>
+          <tr><td colspan="7" class="px-4 py-8 text-center text-slate-500">暂无令牌</td></tr>
+        </tbody>
+        {{end}}
       </table>
     </div>
   </main>
@@ -395,6 +446,8 @@ function fallbackCopy(text) {
     editModal.classList.remove('hidden');
     editModal.classList.add('flex');
   }
+  // 行内 onclick 只能解析全局作用域，须显式挂到 window（此前漏挂导致 ReferenceError）。
+  window.openEditModal = openEditModal;
   document.getElementById('edit-modal-cancel').addEventListener('click', function () {
     editModal.classList.add('hidden');
     editModal.classList.remove('flex');
@@ -404,6 +457,43 @@ function fallbackCopy(text) {
     editingRows.forEach(function (row) {
       const name = row.querySelector('.model-checkbox').value.toLowerCase();
       row.style.display = (!q || name.includes(q)) ? '' : 'none';
+    });
+  });
+
+  // 复制令牌：prompt 命名（默认「原名 副本」），确认后带 hidden name 提交，沿用原白名单。
+  Array.from(document.querySelectorAll('.copy-form')).forEach(function (form) {
+    form.addEventListener('submit', function (e) {
+      e.preventDefault();
+      const def = form.getAttribute('data-default-name') || '';
+      const name = prompt('复制该令牌配置，请输入新令牌名称：', def);
+      if (name === null) return; // 取消
+      const trimmed = name.trim();
+      if (!trimmed) {
+        alert('名称不能为空');
+        return;
+      }
+      const inp = document.createElement('input');
+      inp.type = 'hidden';
+      inp.name = 'name';
+      inp.value = trimmed;
+      form.appendChild(inp);
+      form.submit();
+    });
+  });
+
+  // 改分组：prompt（默认当前分组），确认后带 hidden group 提交；留空归入默认分组。
+  Array.from(document.querySelectorAll('.group-form')).forEach(function (form) {
+    form.addEventListener('submit', function (e) {
+      e.preventDefault();
+      const cur = form.getAttribute('data-current-group') || '';
+      const name = prompt('输入分组名（留空归入默认分组）：', cur);
+      if (name === null) return; // 取消
+      const inp = document.createElement('input');
+      inp.type = 'hidden';
+      inp.name = 'group';
+      inp.value = name.trim();
+      form.appendChild(inp);
+      form.submit();
     });
   });
 })();
