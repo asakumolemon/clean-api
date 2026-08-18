@@ -196,6 +196,9 @@ func (s *Server) renderTokensPage(w http.ResponseWriter, r *http.Request, newTok
 }
 
 func tokenWhitelistJSON(t store.Token) string {
+	if t.ModelWhitelist == nil {
+		return "[]"
+	}
 	b, err := json.Marshal(t.ModelWhitelist)
 	if err != nil {
 		return "[]"

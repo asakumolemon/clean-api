@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -29,9 +30,17 @@ type Model struct {
 	LastSyncAt         time.Time
 }
 
-// SyncModels 将上游拉到的模型列表写库：新增的插入，已有的更新能力与同步时间。
+// SyncModels 将上游拉到的模型列表写库：新增的插入，已有的更新能力与同步时间，
+// 不在新列表中的旧模型会被删除（上游下线的模型不再残留）。
 // 返回本次新增数量。
 func (s *Store) SyncModels(ctx context.Context, channelID int64, models map[string]Capabilities, syncedAt time.Time) (int, error) {
+	// 先收集新列表中的所有模型名，用于后续清理旧模型。
+	newNames := make([]string, 0, len(models))
+	for name := range models {
+		newNames = append(newNames, name)
+	}
+
+	// upsert：新增的插入，已有的更新能力与同步时间。
 	added := 0
 	for name, caps := range models {
 		cj, err := json.Marshal(caps)
@@ -60,6 +69,25 @@ func (s *Store) SyncModels(ctx context.Context, channelID int64, models map[stri
 		}
 		added++
 	}
+
+	// 清理旧模型：删除本渠道中不在新列表中的模型。
+	if len(newNames) > 0 {
+		placeholders := make([]string, len(newNames))
+		args := make([]interface{}, 0, len(newNames)+1)
+		args = append(args, channelID)
+		for i, name := range newNames {
+			placeholders[i] = "?"
+			args = append(args, name)
+		}
+		query := fmt.Sprintf(
+			`DELETE FROM models WHERE channel_id=? AND name NOT IN (%s)`,
+			strings.Join(placeholders, ","),
+		)
+		if _, err := s.db.ExecContext(ctx, query, args...); err != nil {
+			return added, fmt.Errorf("清理旧模型: %w", err)
+		}
+	}
+
 	return added, nil
 }
 
@@ -197,9 +225,9 @@ func (s *Store) OverrideCapabilities(ctx context.Context, id int64, caps Capabil
 
 // ModelRoute 模型 → 渠道 的可路由条目（M3 路由分发用）。
 type ModelRoute struct {
-	ModelName       string       // 渠道内真实模型名（按 name 或 alias 命中）
+	ModelName       string // 渠道内真实模型名（按 name 或 alias 命中）
 	ChannelID       int64
-	ChannelType     string       // openai | anthropic | responses | 厂商类型
+	ChannelType     string // openai | anthropic | responses | 厂商类型
 	BaseURL         string
 	BalanceStrategy string       // random | round_robin（渠道内 key 轮换策略）
 	Caps            Capabilities // 模型能力（system 折叠用）

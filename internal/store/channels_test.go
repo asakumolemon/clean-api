@@ -113,7 +113,7 @@ func TestModelSyncAndOverride(t *testing.T) {
 		t.Error("首次同步应新增 2 条，got", added)
 	}
 
-	// 再次同步：更新已存在，不重复计数
+	// 再次同步：仅传 model-a → model-b 应被清理（上游已下线），model-a 不重复新增
 	added, err = s.SyncModels(ctx, cid, map[string]Capabilities{"model-a": {System: false}}, syncedAt)
 	if err != nil {
 		t.Fatal(err)
@@ -127,6 +127,10 @@ func TestModelSyncAndOverride(t *testing.T) {
 	}
 	if m.Capabilities.System {
 		t.Error("模型能力应被更新为 false")
+	}
+	// model-b 不在新列表中，应被删除
+	if _, err := s.GetModel(ctx, cid, "model-b"); err == nil {
+		t.Error("model-b 不在新列表中，应被清理")
 	}
 
 	// 手动覆盖
@@ -150,8 +154,8 @@ func TestModelSyncAndOverride(t *testing.T) {
 		t.Error("启用/别名更新失败")
 	}
 
-	if n, _ := s.CountModels(ctx); n != 2 {
-		t.Error("模型总数应为 2")
+	if n, _ := s.CountModels(ctx); n != 1 {
+		t.Error("模型总数应为 1（model-b 已清理）")
 	}
 
 	// 删除渠道级联删模型
