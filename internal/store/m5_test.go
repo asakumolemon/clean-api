@@ -409,3 +409,55 @@ func TestCountEncryptedKeys(t *testing.T) {
 		t.Errorf("应为 2 个加密 key，got %d", n)
 	}
 }
+
+func TestRequestLogsTokenSnapshotAndFilter(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	uid, err := s.CreateUser(ctx, "log-user", "hash", "user")
+	if err != nil {
+		t.Fatal(err)
+	}
+	prodID, err := s.CreateToken(ctx, uid, "同名令牌", "log-prod", nil, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetTokenGroup(ctx, prodID, "生产"); err != nil {
+		t.Fatal(err)
+	}
+	defaultID, err := s.CreateToken(ctx, uid, "同名令牌", "log-default", nil, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	for _, l := range []*RequestLog{
+		{TS: now, RequestID: "prod", TokenID: prodID, TokenName: "同名令牌", TokenGroup: "生产", Model: "model-a", Status: 200, PromptTokens: 10, CompletionTokens: 5, CacheHit: true},
+		{TS: now, RequestID: "default", TokenID: defaultID, TokenName: "同名令牌", Model: "model-a", Status: 200, PromptTokens: 3, CompletionTokens: 2},
+	} {
+		if err := s.InsertRequestLog(ctx, l); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	logs, err := s.ListRequestLogs(ctx, LogFilter{TokenID: prodID}, 10, 0)
+	if err != nil || len(logs) != 1 || logs[0].RequestID != "prod" || logs[0].TokenGroup != "生产" {
+		t.Fatalf("按令牌 ID 应准确筛出生产日志，logs=%+v err=%v", logs, err)
+	}
+	if n, _ := s.CountRequestLogs(ctx, LogFilter{TokenGroup: "生产"}); n != 1 {
+		t.Errorf("生产分组应为 1，got %d", n)
+	}
+	if n, _ := s.CountRequestLogs(ctx, LogFilter{TokenGroup: DefaultTokenGroupFilter}); n != 1 {
+		t.Errorf("默认分组应为 1，got %d", n)
+	}
+	if n, _ := s.CountCacheHits(ctx, LogFilter{TokenID: prodID, TokenGroup: "生产"}); n != 1 {
+		t.Errorf("组合筛选缓存命中应为 1，got %d", n)
+	}
+	stats, err := s.LogUsageStats(ctx, LogFilter{}, time.UTC)
+	if err != nil || len(stats) != 2 {
+		t.Fatalf("同模型不同令牌应拆为两行，stats=%+v err=%v", stats, err)
+	}
+	for _, stat := range stats {
+		if stat.TokenID == prodID && (stat.TokenName != "同名令牌" || stat.TokenGroup != "生产" || stat.TotalTokens != 15) {
+			t.Errorf("生产令牌快照或用量错误：%+v", stat)
+		}
+	}
+}

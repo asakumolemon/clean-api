@@ -100,9 +100,11 @@ func (s *Store) migrate() error {
 			status INTEGER,
 			latency_ms INTEGER,
 			prompt_tokens INTEGER,
-			completion_tokens INTEGER,
-			cache_hit INTEGER DEFAULT 0,
-			error TEXT
+				completion_tokens INTEGER,
+				cache_hit INTEGER DEFAULT 0,
+				token_name TEXT,
+				token_group TEXT,
+				error TEXT
 		);`,
 		// 请求日志查询索引（M5 日志页筛选/分页用）
 		`CREATE INDEX IF NOT EXISTS idx_request_logs_ts ON request_logs(ts);`,
@@ -114,12 +116,26 @@ func (s *Store) migrate() error {
 			return err
 		}
 	}
-	// 老库补列（首个 ALTER 先例）：request_logs.cache_hit（M7 后响应缓存命中标记）、
-	// tokens.group（令牌分组，M7 后）。ensureColumn 幂等，可在同一迁移里链式调用。
+	// 老库补列：ensureColumn 幂等，可在同一迁移里链式调用。
 	if err := s.ensureColumn("request_logs", "cache_hit", "cache_hit INTEGER DEFAULT 0"); err != nil {
 		return err
 	}
-	return s.ensureColumn("tokens", "group", "`group` TEXT DEFAULT ''")
+	if err := s.ensureColumn("request_logs", "token_name", "token_name TEXT"); err != nil {
+		return err
+	}
+	if err := s.ensureColumn("request_logs", "token_group", "token_group TEXT"); err != nil {
+		return err
+	}
+	if err := s.ensureColumn("tokens", "group", "`group` TEXT DEFAULT ''"); err != nil {
+		return err
+	}
+	// 旧日志按当前令牌补齐可取得的快照；已删除令牌的历史记录保留为空。
+	_, err := s.db.Exec(`
+		UPDATE request_logs
+		SET token_name = COALESCE((SELECT name FROM tokens WHERE tokens.id = request_logs.token_id), token_name, ''),
+		    token_group = COALESCE((SELECT ` + "`group`" + ` FROM tokens WHERE tokens.id = request_logs.token_id), token_group, '')
+		WHERE COALESCE(token_name, '') = '' AND COALESCE(token_group, '') = ''`)
+	return err
 }
 
 // ensureColumn 检测表是否已有指定列，缺失则 ALTER TABLE ADD COLUMN 补上（幂等）。

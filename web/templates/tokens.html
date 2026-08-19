@@ -225,8 +225,8 @@ API Key：{{$single.Plain}}
         <h3 class="mb-4 text-lg font-semibold text-slate-900">编辑模型白名单</h3>
         <input id="edit-model-search" type="text" placeholder="搜索模型…"
           class="mb-3 w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200">
-        <div id="edit-model-list" class="max-h-80 space-y-1 overflow-y-auto pr-1"></div>
         <form id="edit-form" method="post" action="">
+          <div id="edit-model-list" class="max-h-80 space-y-1 overflow-y-auto pr-1"></div>
           <label class="mt-3 flex items-center gap-2 text-sm text-slate-700">
             <input id="edit-allow-all" name="allow_all" type="checkbox" class="h-4 w-4 accent-blue-600">
             允许全部模型（必须显式勾选才生效）
@@ -417,6 +417,7 @@ function fallbackCopy(text) {
       row.className = 'model-row flex cursor-pointer items-start gap-2 rounded-md px-3 py-2 text-sm text-slate-700 hover:bg-slate-50';
       const cb = document.createElement('input');
       cb.type = 'checkbox';
+      cb.name = 'models';
       cb.className = 'model-checkbox mt-1 h-4 w-4 accent-blue-600';
       cb.value = m;
       const name = document.createElement('span');

@@ -236,6 +236,61 @@ func TestLogsPage(t *testing.T) {
 }
 
 // 日志页内嵌的按天×模型 token 统计：汇总卡片与明细表随筛选（含日期范围）渲染。
+func TestLogsPageTokenGroupFilter(t *testing.T) {
+	up := fakeUpstream(t)
+	defer up.Close()
+	ts, st, client := newTestWeb(t, up)
+	ctx := context.Background()
+	admin, err := st.GetUserByUsername(ctx, "admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	prodID, err := st.CreateToken(ctx, admin.ID, "生产令牌", "logs-prod", nil, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetTokenGroup(ctx, prodID, "生产"); err != nil {
+		t.Fatal(err)
+	}
+	defaultID, err := st.CreateToken(ctx, admin.ID, "默认令牌", "logs-default", nil, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	for _, l := range []*store.RequestLog{
+		{TS: now, RequestID: "prod-log", TokenID: prodID, TokenName: "生产令牌", TokenGroup: "生产", Model: "model-a", Status: 200, PromptTokens: 12, CompletionTokens: 8},
+		{TS: now, RequestID: "default-log", TokenID: defaultID, TokenName: "默认令牌", Model: "model-a", Status: 200, PromptTokens: 3, CompletionTokens: 2},
+	} {
+		if err := st.InsertRequestLog(ctx, l); err != nil {
+			t.Fatal(err)
+		}
+	}
+	get := func(path string) string {
+		t.Helper()
+		resp, err := client.Get(ts.URL + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		body := make([]byte, 2<<20)
+		n, _ := resp.Body.Read(body)
+		return string(body[:n])
+	}
+	html := get("/admin/logs?token_id=" + itoa64(prodID) + "&group=%E7%94%9F%E4%BA%A7")
+	for _, want := range []string{"prod-log", "生产令牌", "生产", "20", `name="token_id"`} {
+		if !strings.Contains(html, want) {
+			t.Errorf("按令牌筛选页面应包含 %q", want)
+		}
+	}
+	if strings.Contains(html, "default-log") {
+		t.Error("按令牌 ID 和分组组合筛选不应显示其他令牌日志")
+	}
+	html = get("/admin/logs?group=" + store.DefaultTokenGroupFilter)
+	if !strings.Contains(html, "default-log") || strings.Contains(html, "prod-log") {
+		t.Error("默认分组筛选应只显示默认分组日志")
+	}
+}
+
 func TestLogsPageStats(t *testing.T) {
 	up := fakeUpstream(t)
 	defer up.Close()
@@ -1059,6 +1114,14 @@ func TestTokenEditWhitelist(t *testing.T) {
 		if !strings.Contains(html, s) {
 			t.Errorf("令牌页应包含编辑白名单元素 %q", s)
 		}
+	}
+	listPos := strings.Index(html, `id="edit-model-list"`)
+	formPos := strings.Index(html, `id="edit-form"`)
+	if listPos < 0 || formPos < 0 || formPos > listPos {
+		t.Error("编辑模型列表必须位于 edit-form 内，勾选项才能随表单提交")
+	}
+	if !strings.Contains(html, `cb.name = 'models'`) {
+		t.Error("动态补充的旧模型 checkbox 必须带 models 字段名")
 	}
 
 	// 更新白名单为 model-b/model-c

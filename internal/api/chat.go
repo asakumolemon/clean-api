@@ -213,8 +213,11 @@ func (s *Server) logRequest(r *http.Request, model string, channelID int64, star
 	tok := auth.TokenFromContext(r.Context())
 	user := auth.UserFromContext(r.Context())
 	var tokID, userID int64
+	var tokName, tokGroup string
 	if tok != nil {
 		tokID = tok.ID
+		tokName = tok.Name
+		tokGroup = tok.Group
 	}
 	if user != nil {
 		userID = user.ID
@@ -225,6 +228,8 @@ func (s *Server) logRequest(r *http.Request, model string, channelID int64, star
 		TS:               time.Now().UTC(),
 		RequestID:        requestID,
 		TokenID:          tokID,
+		TokenName:        tokName,
+		TokenGroup:       tokGroup,
 		UserID:           userID,
 		Model:            model,
 		ChannelID:        channelID,

@@ -6,12 +6,17 @@ import (
 	"time"
 )
 
-// RequestLog 一条请求日志（M5 起写入，异步、可丢）。
+// DefaultTokenGroupFilter 是日志筛选中的默认分组标记，避免与“全部分组”的空值冲突。
+const DefaultTokenGroupFilter = "__default__"
+
+// RequestLog 一条请求日志（异步、可丢）。令牌名称与分组为请求发生时的快照。
 type RequestLog struct {
 	ID               int64
 	TS               time.Time
 	RequestID        string
 	TokenID          int64
+	TokenName        string
+	TokenGroup       string
 	UserID           int64
 	Model            string
 	ChannelID        int64
@@ -19,37 +24,41 @@ type RequestLog struct {
 	LatencyMS        int64
 	PromptTokens     int
 	CompletionTokens int
-	CacheHit         bool // 响应缓存命中（M7 后：命中时未调上游，channel_id 为 0）
+	CacheHit         bool
 	Error            string
 }
 
 // LogFilter 日志查询筛选（全部字段为空/零值表示不过滤）。
 type LogFilter struct {
-	Model  string     // 按模型名模糊匹配
-	Token  string     // 按令牌名精确匹配（空=全部）
-	Status string     // all | 2xx | 4xx | 5xx
-	UserID int64      // 0=全部用户
-	From   *time.Time // 起（含，UTC）；空=不限
-	To     *time.Time // 止（排他，UTC，To 当日 24:00）；空=不限
+	Model      string     // 按模型名模糊匹配
+	TokenID    int64      // 按令牌 ID 精确匹配（0=全部）
+	TokenGroup string     // 按令牌分组匹配（空=全部；DefaultTokenGroupFilter=默认分组）
+	Status     string     // all | 2xx | 4xx | 5xx
+	UserID     int64      // 0=全部用户
+	From       *time.Time // 起（含，UTC）；空=不限
+	To         *time.Time // 止（排他，UTC，To 当日 24:00）；空=不限
 }
 
-// UsageRow 按天×模型分组的用量统计行（Day 为本地日期 YYYY-MM-DD，按传入时区分桶）。
+// UsageRow 按天×模型×令牌分组的用量统计行（Day 为本地日期 YYYY-MM-DD，按传入时区分桶）。
 type UsageRow struct {
 	Day              string
 	Model            string
+	TokenID          int64
+	TokenName        string
+	TokenGroup       string
 	Requests         int
-	CacheHits        int // 响应缓存命中请求数（M7 后）
+	CacheHits        int
 	PromptTokens     int64
 	CompletionTokens int64
-	TotalTokens      int64 // PromptTokens + CompletionTokens
+	TotalTokens      int64
 }
 
 // InsertRequestLog 写一条请求日志（调用方负责异步与错误忽略）。
 func (s *Store) InsertRequestLog(ctx context.Context, l *RequestLog) error {
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO request_logs(ts, request_id, token_id, user_id, model, channel_id, status, latency_ms, prompt_tokens, completion_tokens, cache_hit, error)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
-		l.TS, l.RequestID, l.TokenID, l.UserID, l.Model, l.ChannelID, l.Status, l.LatencyMS,
+		INSERT INTO request_logs(ts, request_id, token_id, token_name, token_group, user_id, model, channel_id, status, latency_ms, prompt_tokens, completion_tokens, cache_hit, error)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		l.TS, l.RequestID, l.TokenID, l.TokenName, l.TokenGroup, l.UserID, l.Model, l.ChannelID, l.Status, l.LatencyMS,
 		l.PromptTokens, l.CompletionTokens, boolToInt(l.CacheHit), l.Error)
 	if err != nil {
 		return fmt.Errorf("写入请求日志: %w", err)
@@ -61,11 +70,10 @@ func (s *Store) InsertRequestLog(ctx context.Context, l *RequestLog) error {
 func (s *Store) ListRequestLogs(ctx context.Context, f LogFilter, limit, offset int) ([]RequestLog, error) {
 	where, args := logFilterWhere(f)
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, ts, request_id, COALESCE(token_id,0), COALESCE(user_id,0), COALESCE(model,''),
-		       COALESCE(channel_id,0), COALESCE(status,0), COALESCE(latency_ms,0),
+		SELECT id, ts, request_id, COALESCE(token_id,0), COALESCE(token_name,''), COALESCE(token_group,''),
+		       COALESCE(user_id,0), COALESCE(model,''), COALESCE(channel_id,0), COALESCE(status,0), COALESCE(latency_ms,0),
 		       COALESCE(prompt_tokens,0), COALESCE(completion_tokens,0), COALESCE(cache_hit,0), COALESCE(error,'')
-		FROM request_logs`+where+` ORDER BY id DESC LIMIT ? OFFSET ?`,
-		append(args, limit, offset)...)
+		FROM request_logs`+where+` ORDER BY id DESC LIMIT ? OFFSET ?`, append(args, limit, offset)...)
 	if err != nil {
 		return nil, err
 	}
@@ -74,7 +82,7 @@ func (s *Store) ListRequestLogs(ctx context.Context, f LogFilter, limit, offset 
 	for rows.Next() {
 		var l RequestLog
 		var hit int
-		if err := rows.Scan(&l.ID, &l.TS, &l.RequestID, &l.TokenID, &l.UserID, &l.Model,
+		if err := rows.Scan(&l.ID, &l.TS, &l.RequestID, &l.TokenID, &l.TokenName, &l.TokenGroup, &l.UserID, &l.Model,
 			&l.ChannelID, &l.Status, &l.LatencyMS, &l.PromptTokens, &l.CompletionTokens, &hit, &l.Error); err != nil {
 			return nil, err
 		}
@@ -114,9 +122,15 @@ func logFilterWhere(f LogFilter) (string, []any) {
 		conds = append(conds, "model LIKE ?")
 		args = append(args, "%"+f.Model+"%")
 	}
-	if f.Token != "" {
-		conds = append(conds, "token_id = (SELECT id FROM tokens WHERE name = ?)")
-		args = append(args, f.Token)
+	if f.TokenID > 0 {
+		conds = append(conds, "token_id = ?")
+		args = append(args, f.TokenID)
+	}
+	if f.TokenGroup == DefaultTokenGroupFilter {
+		conds = append(conds, "COALESCE(token_group, '') = '' AND COALESCE(token_name, '') <> ''")
+	} else if f.TokenGroup != "" {
+		conds = append(conds, "token_group = ?")
+		args = append(args, f.TokenGroup)
 	}
 	switch f.Status {
 	case "2xx":
@@ -148,10 +162,8 @@ func logFilterWhere(f LogFilter) (string, []any) {
 	return where, args
 }
 
-// LogUsageStats 按天×模型统计请求数与 token 用量（按 loc 时区分桶，默认 UTC）。
-// 说明：modernc 驱动默认把 time.Time 以 Go t.String() 文本写入（如 "2026-08-10 12:00:00 +0000 UTC"），
-// SQLite 的 date()/strftime() 无法解析该完整格式（返回 NULL），故先取文本前 19 位（YYYY-MM-DD HH:MM:SS，
-// 标准格式可解析），再按 loc 当前偏移秒做 datetime 平移后取前 10 位作为本地日期。自托管单时区场景足够。
+// LogUsageStats 按天×模型×令牌统计请求数与 token 用量（按 loc 时区分桶，默认 UTC）。
+// modernc 驱动把 time.Time 以 Go 时间文本写入，SQLite 无法直接解析，因此截取前 19 位后按时区偏移平移。
 func (s *Store) LogUsageStats(ctx context.Context, f LogFilter, loc *time.Location) ([]UsageRow, error) {
 	where, args := logFilterWhere(f)
 	offsetSec := 0
@@ -160,11 +172,12 @@ func (s *Store) LogUsageStats(ctx context.Context, f LogFilter, loc *time.Locati
 	}
 	shift := fmt.Sprintf("%+d seconds", offsetSec)
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT COALESCE(substr(datetime(substr(ts, 1, 19), printf('%+d seconds', ?)), 1, 10), '') AS day, COALESCE(model,''), COUNT(*),
+		SELECT COALESCE(substr(datetime(substr(ts, 1, 19), printf('%+d seconds', ?)), 1, 10), '') AS day,
+		       COALESCE(model,''), COALESCE(token_id,0), COALESCE(token_name,''), COALESCE(token_group,''), COUNT(*),
 		       COALESCE(SUM(cache_hit),0), COALESCE(SUM(prompt_tokens),0), COALESCE(SUM(completion_tokens),0)
 		FROM request_logs`+where+`
-		GROUP BY day, model
-		ORDER BY day DESC, COUNT(*) DESC, model`, append([]any{shift}, args...)...)
+		GROUP BY day, model, token_id, token_name, token_group
+		ORDER BY day DESC, COUNT(*) DESC, model, token_name`, append([]any{shift}, args...)...)
 	if err != nil {
 		return nil, err
 	}
@@ -172,7 +185,7 @@ func (s *Store) LogUsageStats(ctx context.Context, f LogFilter, loc *time.Locati
 	stats := []UsageRow{}
 	for rows.Next() {
 		var u UsageRow
-		if err := rows.Scan(&u.Day, &u.Model, &u.Requests, &u.CacheHits, &u.PromptTokens, &u.CompletionTokens); err != nil {
+		if err := rows.Scan(&u.Day, &u.Model, &u.TokenID, &u.TokenName, &u.TokenGroup, &u.Requests, &u.CacheHits, &u.PromptTokens, &u.CompletionTokens); err != nil {
 			return nil, err
 		}
 		u.TotalTokens = u.PromptTokens + u.CompletionTokens
