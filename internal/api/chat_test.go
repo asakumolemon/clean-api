@@ -349,6 +349,97 @@ data: [DONE]
 	if l.Error != "" {
 		t.Errorf("成功日志不应有错误信息: %+v", l)
 	}
+	if !l.Streaming {
+		t.Error("流式成功日志应标记 streaming=true")
+	}
+	if l.Interrupted {
+		t.Error("流式成功日志不应标记 interrupted")
+	}
+	// TTFB >= 0：极快请求在毫秒精度下可能为 0，但流式请求必有该字段（非流式为 0）。
+	if l.LatencyMS < l.TTFBMS {
+		t.Errorf("总延迟应 >= TTFB: latency=%d ttfb=%d", l.LatencyMS, l.TTFBMS)
+	}
+}
+
+// 流中错误（已开始输出后上游中断）→ 日志标记流中断（streaming + interrupted），TTFB 已记录。
+func TestChatStreamInterruptedLogged(t *testing.T) {
+	srv, st, am := newTestSrv(t)
+	ctx := context.Background()
+	// 上游先发一个合法 chunk（触发 started），再发非法行导致流中解析错误。
+	sse := `data: {"choices":[{"index":0,"delta":{"content":"你"},"finish_reason":null}]}
+data: not-json
+`
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, sse)
+	}))
+	t.Cleanup(upstream.Close)
+
+	uid, _ := st.CreateUser(ctx, "admin", "hash", "admin")
+	plain := "test-token-abc"
+	_, _ = st.CreateToken(ctx, uid, "t", auth.HashToken(plain), []string{"deepseek-chat"}, true)
+	chID := addTestChannelReturnID(t, st, upstream.URL)
+
+	rec := doChat(t, srv, am, st, plain, `{"model":"deepseek-chat","stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("已开始输出后错误仍应 200（SSE 已发），got %d: %s", rec.Code, rec.Body.String())
+	}
+	logs := waitLogs(t, st, 1)
+	l := logs[0]
+	if l.Status != 0 {
+		t.Errorf("流中断日志 status 应为 0（无 HTTP 状态码），got %d", l.Status)
+	}
+	if !l.Streaming || !l.Interrupted {
+		t.Errorf("流中断日志应 streaming+interrupted: %+v", l)
+	}
+	if l.ChannelID != chID {
+		t.Errorf("流中断日志应记录尝试渠道 %d: %+v", chID, l)
+	}
+	// 首 chunk 已发出后中断：TTFB 可能为 0（毫秒精度下极快），但字段应已记录（非负）。
+	if l.TTFBMS < 0 {
+		t.Errorf("流中断日志 TTFB 不应为负: %+v", l)
+	}
+	if l.CompletionTokens <= 0 {
+		t.Errorf("流中断日志应近似记录已发送 token: %+v", l)
+	}
+	if l.Error == "" {
+		t.Error("流中断日志应记录错误原因")
+	}
+}
+
+// 首事件前的路由错误（如上游 4xx）不算流中断：streaming=false、interrupted=false。
+func TestChatStreamErrorBeforeEmitNotInterrupted(t *testing.T) {
+	srv, st, am := newTestSrv(t)
+	ctx := context.Background()
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = io.WriteString(w, `{"error": {"message": "参数错误", "type": "invalid_request_error"}}`)
+	}))
+	t.Cleanup(upstream.Close)
+
+	uid, _ := st.CreateUser(ctx, "admin", "hash", "admin")
+	plain := "test-token-abc"
+	_, _ = st.CreateToken(ctx, uid, "t", auth.HashToken(plain), []string{"deepseek-chat"}, true)
+	chID := addTestChannelReturnID(t, st, upstream.URL)
+
+	rec := doChat(t, srv, am, st, plain, `{"model":"deepseek-chat","stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("首事件前 4xx 应透传 400，got %d", rec.Code)
+	}
+	logs := waitLogs(t, st, 1)
+	l := logs[0]
+	if l.Status != http.StatusBadRequest {
+		t.Errorf("首事件前错误日志 status 应为 400: %+v", l)
+	}
+	if l.Streaming || l.Interrupted {
+		t.Errorf("首事件前错误不应标记流中断: %+v", l)
+	}
+	if l.ChannelID != chID {
+		t.Errorf("首事件前错误日志应记录渠道 %d: %+v", chID, l)
+	}
+	if l.TTFBMS != 0 {
+		t.Errorf("首事件前错误 TTFB 应为 0: %+v", l)
+	}
 }
 
 // 上游 400 → 透传状态码与错误信息。

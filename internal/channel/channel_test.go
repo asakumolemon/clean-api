@@ -159,6 +159,10 @@ func TestSelectKeyRotationAndCooldown(t *testing.T) {
 	enc2, _ := m.enc.Encrypt("sk-2")
 	_, _ = st.AddChannelKey(ctx, cid, enc2)
 
+	// 用 round_robin 保证短抽样内覆盖全部 key（random 短抽样可能随机不到某个 key，造成 flaky）。
+	if err := st.UpdateChannel(ctx, cid, "c", "openai", "https://x.com", "active", 1, "round_robin"); err != nil {
+		t.Fatal(err)
+	}
 	ch, _ := st.GetChannel(ctx, cid)
 	seen := map[string]bool{}
 	for i := 0; i < 4; i++ {

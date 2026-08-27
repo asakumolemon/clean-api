@@ -22,9 +22,12 @@ type RequestLog struct {
 	ChannelID        int64
 	Status           int
 	LatencyMS        int64
+	TTFBMS           int64 // 流式：首 token 延迟（首事件写出时刻 - 请求开始）；非流式为 0
 	PromptTokens     int
 	CompletionTokens int
 	CacheHit         bool
+	Streaming        bool // 流式请求（成功与已开始输出的错误都标记）
+	Interrupted      bool // 流式中断（已开始输出后出错 / 客户端断开）
 	Error            string
 }
 
@@ -56,10 +59,10 @@ type UsageRow struct {
 // InsertRequestLog 写一条请求日志（调用方负责异步与错误忽略）。
 func (s *Store) InsertRequestLog(ctx context.Context, l *RequestLog) error {
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO request_logs(ts, request_id, token_id, token_name, token_group, user_id, model, channel_id, status, latency_ms, prompt_tokens, completion_tokens, cache_hit, error)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		INSERT INTO request_logs(ts, request_id, token_id, token_name, token_group, user_id, model, channel_id, status, latency_ms, ttfb_ms, prompt_tokens, completion_tokens, cache_hit, streaming, interrupted, error)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		l.TS, l.RequestID, l.TokenID, l.TokenName, l.TokenGroup, l.UserID, l.Model, l.ChannelID, l.Status, l.LatencyMS,
-		l.PromptTokens, l.CompletionTokens, boolToInt(l.CacheHit), l.Error)
+		l.TTFBMS, l.PromptTokens, l.CompletionTokens, boolToInt(l.CacheHit), boolToInt(l.Streaming), boolToInt(l.Interrupted), l.Error)
 	if err != nil {
 		return fmt.Errorf("写入请求日志: %w", err)
 	}
@@ -72,7 +75,8 @@ func (s *Store) ListRequestLogs(ctx context.Context, f LogFilter, limit, offset 
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, ts, request_id, COALESCE(token_id,0), COALESCE(token_name,''), COALESCE(token_group,''),
 		       COALESCE(user_id,0), COALESCE(model,''), COALESCE(channel_id,0), COALESCE(status,0), COALESCE(latency_ms,0),
-		       COALESCE(prompt_tokens,0), COALESCE(completion_tokens,0), COALESCE(cache_hit,0), COALESCE(error,'')
+		       COALESCE(ttfb_ms,0), COALESCE(prompt_tokens,0), COALESCE(completion_tokens,0), COALESCE(cache_hit,0),
+		       COALESCE(streaming,0), COALESCE(interrupted,0), COALESCE(error,'')
 		FROM request_logs`+where+` ORDER BY id DESC LIMIT ? OFFSET ?`, append(args, limit, offset)...)
 	if err != nil {
 		return nil, err
@@ -81,12 +85,14 @@ func (s *Store) ListRequestLogs(ctx context.Context, f LogFilter, limit, offset 
 	logs := []RequestLog{}
 	for rows.Next() {
 		var l RequestLog
-		var hit int
+		var hit, streaming, interrupted int
 		if err := rows.Scan(&l.ID, &l.TS, &l.RequestID, &l.TokenID, &l.TokenName, &l.TokenGroup, &l.UserID, &l.Model,
-			&l.ChannelID, &l.Status, &l.LatencyMS, &l.PromptTokens, &l.CompletionTokens, &hit, &l.Error); err != nil {
+			&l.ChannelID, &l.Status, &l.LatencyMS, &l.TTFBMS, &l.PromptTokens, &l.CompletionTokens, &hit, &streaming, &interrupted, &l.Error); err != nil {
 			return nil, err
 		}
 		l.CacheHit = hit != 0
+		l.Streaming = streaming != 0
+		l.Interrupted = interrupted != 0
 		logs = append(logs, l)
 	}
 	return logs, rows.Err()

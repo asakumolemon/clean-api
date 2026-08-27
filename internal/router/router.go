@@ -192,7 +192,11 @@ func (r *Router) resolveRoutes(ctx context.Context, model string) ([]store.Model
 		return nil, nil, 0, ErrModelNotFound
 	}
 	// 渠道尝试序列 = 两轮轮换顺序（覆盖 5xx/网络错误「重试 1 次换渠道」；单渠道时重试同一家）。
-	order := r.channelOrder(model, len(routes))
+	weights := make([]int, len(routes))
+	for i, rt := range routes {
+		weights[i] = rt.Weight
+	}
+	order := r.channelOrder(model, weights)
 	seq := make([]int, 0, 2*len(routes))
 	seq = append(seq, order...)
 	seq = append(seq, order...)
@@ -243,20 +247,44 @@ func unsupportedTypeError(chType string) error {
 }
 
 // channelOrder 返回渠道下标的尝试顺序：
-// random 随机打乱；round_robin 从模型计数起点循环（多请求轮换起点）。
-func (r *Router) channelOrder(model string, n int) []int {
-	perm := make([]int, n)
-	for i := range perm {
-		perm[i] = i
-	}
+// random 按权重加权抽样（权重=相对出现次数，权重 <=0 按 1 处理）；
+// round_robin 从模型计数起点循环（多请求轮换起点，权重不参与）。
+func (r *Router) channelOrder(model string, weights []int) []int {
+	n := len(weights)
+	perm := make([]int, 0, n)
 	start := 0
 	if r.strategy == "round_robin" {
+		perm = make([]int, n)
+		for i := range perm {
+			perm[i] = i
+		}
 		r.rrMu.Lock()
 		start = r.rr[model] % n
 		r.rr[model]++
 		r.rrMu.Unlock()
 	} else {
-		rand.Shuffle(n, func(i, j int) { perm[i], perm[j] = perm[j], perm[i] })
+		total := 0
+		norm := make([]int, n)
+		for i, w := range weights {
+			if w <= 0 {
+				w = 1
+			}
+			norm[i] = w
+			total += w
+		}
+		for len(perm) < n {
+			roll := rand.Intn(total)
+			idx := 0
+			for acc := 0; ; idx++ {
+				acc += norm[idx]
+				if roll < acc {
+					break
+				}
+			}
+			perm = append(perm, idx)
+			total -= norm[idx]
+			norm[idx] = 0
+		}
 	}
 	out := make([]int, 0, n)
 	for i := 0; i < n; i++ {

@@ -65,6 +65,27 @@ func TestRequestLogsCRUDAndFilter(t *testing.T) {
 	if logs[0].ID < logs[2].ID {
 		t.Error("应按 id 倒序")
 	}
+	// 流式观测字段：写入并读取往返一致（streaming/interrupted/ttfb_ms）。
+	streamLog := &RequestLog{
+		TS: now, RequestID: "req-stream", Model: "deepseek-chat", Status: 0,
+		PromptTokens: 1, CompletionTokens: 5, TTFBMS: 1234,
+		Streaming: true, Interrupted: true, Error: "context canceled",
+	}
+	if err := s.InsertRequestLog(context.Background(), streamLog); err != nil {
+		t.Fatal(err)
+	}
+	// ListRequestLogs 按模型筛选（倒序），刚插入的流式日志应在最前。
+	gotLogs, _ := s.ListRequestLogs(ctx, LogFilter{Model: "deepseek-chat"}, 10, 0)
+	if len(gotLogs) == 0 {
+		t.Fatal("应有日志")
+	}
+	rl := gotLogs[0] // 倒序 → 刚插入的流式日志在最前
+	if !rl.Streaming || !rl.Interrupted || rl.TTFBMS != 1234 || rl.Status != 0 {
+		t.Errorf("流式字段往返不一致: %+v", rl)
+	}
+	if rl.CompletionTokens != 5 {
+		t.Errorf("流式日志 completion_tokens 应保留: %+v", rl)
+	}
 	// 第二页
 	logs2, _ := s.ListRequestLogs(ctx, LogFilter{}, 3, 3)
 	if len(logs2) != 3 {
@@ -258,6 +279,16 @@ func TestEnsureColumnIdempotent(t *testing.T) {
 	}
 	if err := s.ensureColumn("request_logs", "cache_mark", "cache_mark INTEGER DEFAULT 0"); err != nil {
 		t.Fatalf("再次补列应幂等: %v", err)
+	}
+	// 流式观测列：migrate 已建 streaming/interrupted/ttfb_ms，重复补列应幂等
+	for _, c := range [][2]string{
+		{"streaming", "streaming INTEGER DEFAULT 0"},
+		{"interrupted", "interrupted INTEGER DEFAULT 0"},
+		{"ttfb_ms", "ttfb_ms INTEGER DEFAULT 0"},
+	} {
+		if err := s.ensureColumn("request_logs", c[0], c[1]); err != nil {
+			t.Fatalf("重复补列 %s 应幂等: %v", c[0], err)
+		}
 	}
 }
 

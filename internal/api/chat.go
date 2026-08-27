@@ -101,7 +101,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request, entry entryProto
 		if resp, ok := s.cache.Get(cacheKey); ok {
 			if out, err := serializeResponse(entry, resp); err == nil {
 				s.logRequest(r, req.Model, 0, start, requestID, http.StatusOK, "",
-					resp.Usage.PromptTokens, resp.Usage.CompletionTokens, true)
+					resp.Usage.PromptTokens, resp.Usage.CompletionTokens, true, nil)
 				w.Header().Set("Content-Type", "application/json; charset=utf-8")
 				w.WriteHeader(http.StatusOK)
 				_, _ = w.Write(out)
@@ -136,7 +136,7 @@ func (s *Server) handleNonStream(w http.ResponseWriter, r *http.Request, entry e
 		if res != nil {
 			chID = res.ChannelID // 错误时也携带实际尝试渠道（请求日志用）
 		}
-		s.logRequest(r, req.Model, chID, start, requestID, errorStatus(err), err.Error(), 0, 0, false)
+		s.logRequest(r, req.Model, chID, start, requestID, errorStatus(err), err.Error(), 0, 0, false, nil)
 		s.writeRouteError(w, entry, err, req.Model)
 		return
 	}
@@ -149,7 +149,7 @@ func (s *Server) handleNonStream(w http.ResponseWriter, r *http.Request, entry e
 		s.cache.Set(cacheKey, res.Resp) // 只缓存成功响应
 	}
 	s.logRequest(r, req.Model, res.ChannelID, start, requestID, http.StatusOK, "",
-		res.Resp.Usage.PromptTokens, res.Resp.Usage.CompletionTokens, false)
+		res.Resp.Usage.PromptTokens, res.Resp.Usage.CompletionTokens, false, nil)
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(out)
@@ -175,15 +175,21 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request, entry entr
 	w.Header().Set("X-Accel-Buffering", "no")
 
 	writer := newStreamWriter(entry, w, req.Model)
+	stats := newStreamStats()
 	started := false
 	var usage *protocol.Usage
 	chID, err := s.router.ChatStream(r.Context(), req.Model, req, func(ev protocol.StreamEvent) error {
 		if !started {
 			started = true
 			w.WriteHeader(http.StatusOK)
+			stats.markFirstChunk(len(ev.Delta))
 		}
 		if ev.Type == protocol.EventDone && ev.Usage != nil {
 			usage = ev.Usage // 缓存 done 事件的用量，成功日志用
+			stats.setTotalOutput(ev.Usage.CompletionTokens)
+		}
+		if ev.Type == protocol.EventTextDelta {
+			stats.addSentToken(len(ev.Delta))
 		}
 		return writer.WriteEvent(ev)
 	})
@@ -191,12 +197,13 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request, entry entr
 		if !started {
 			// 路由层错误（模型不存在/上游 4xx 等）：HTTP 头未发，可写正常 JSON 错误
 			status := errorStatus(err)
-			s.logRequest(r, req.Model, chID, start, requestID, status, err.Error(), 0, 0, false)
+			s.logRequest(r, req.Model, chID, start, requestID, status, err.Error(), 0, 0, false, nil)
 			s.writeRouteError(w, entry, err, req.Model)
 			return
 		}
-		_ = writer.WriteError(err) // 流中错误：协议 error 事件
-		s.logRequest(r, req.Model, chID, start, requestID, 0, err.Error(), 0, 0, false)
+		// 流中错误：已开始输出（started=true）→ 协议 error 事件 + 标记流中断。
+		_ = writer.WriteError(err)
+		s.logRequest(r, req.Model, chID, start, requestID, 0, err.Error(), 0, stats.sentTokensCount(), false, stats)
 		return
 	}
 	_ = writer.Finish() // 收尾（未收到 done 时补发结束事件，防客户端挂起）
@@ -205,11 +212,12 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request, entry entr
 	if usage != nil {
 		pt, ct = usage.PromptTokens, usage.CompletionTokens
 	}
-	s.logRequest(r, req.Model, chID, start, requestID, http.StatusOK, "", pt, ct, false)
+	s.logRequest(r, req.Model, chID, start, requestID, http.StatusOK, "", pt, ct, false, stats)
 }
 
 // logRequest 异步写请求日志（失败忽略，不影响主流程，符合 REQUIREMENTS §2.6）。
-func (s *Server) logRequest(r *http.Request, model string, channelID int64, start time.Time, requestID string, status int, errText string, promptTokens, completionTokens int, cacheHit bool) {
+// stats 为流式可观测性指标（nil 表示非流式或未开始输出的错误）。
+func (s *Server) logRequest(r *http.Request, model string, channelID int64, start time.Time, requestID string, status int, errText string, promptTokens, completionTokens int, cacheHit bool, stats *streamStats) {
 	tok := auth.TokenFromContext(r.Context())
 	user := auth.UserFromContext(r.Context())
 	var tokID, userID int64
@@ -239,6 +247,16 @@ func (s *Server) logRequest(r *http.Request, model string, channelID int64, star
 		CompletionTokens: completionTokens,
 		CacheHit:         cacheHit,
 		Error:            truncateLog(errText, 300),
+	}
+	if stats != nil {
+		started := stats.started
+		log.TTFBMS = stats.ttfbMS(start)
+		log.Streaming = started
+		log.Interrupted = started && status == 0 // 已开始输出后出错/中断（status 0）
+		if sent := stats.sentTokensCount(); sent > 0 && log.CompletionTokens == 0 {
+			// 流中错误时没有 done 用量，用已发送 token 近似输出量。
+			log.CompletionTokens = sent
+		}
 	}
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

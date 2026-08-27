@@ -234,6 +234,40 @@ func TestChatModelNotFound(t *testing.T) {
 	}
 }
 
+// random 策略 + 权重：高权重渠道被选中次数显著多于低权重渠道。
+func TestChatWeightedRandom(t *testing.T) {
+	st, rt := newTestEnv(t, "random")
+	a := chatMock(t, "渠道A")
+	b := chatMock(t, "渠道B")
+	chA := addChannel(t, st, "A", "openai", a.srv.URL, []string{"sk-1"}, map[string]store.Capabilities{"m": {}})
+	chB := addChannel(t, st, "B", "openai", b.srv.URL, []string{"sk-2"}, map[string]store.Capabilities{"m": {}})
+	// A 权重 3，B 权重 1 → A 被选中的概率约为 B 的 3 倍。
+	if err := st.UpdateChannel(context.Background(), chA, "A", "openai", a.srv.URL, "active", 3, "random"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpdateChannel(context.Background(), chB, "B", "openai", b.srv.URL, "active", 1, "random"); err != nil {
+		t.Fatal(err)
+	}
+
+	const total = 400
+	for i := 0; i < total; i++ {
+		if _, err := rt.Chat(context.Background(), "m", chatReq("m")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	na, nb := a.reqs.Load(), b.reqs.Load()
+	if na+nb != total {
+		t.Errorf("请求总数应为 %d，got %d", total, na+nb)
+	}
+	// 权重 3:1 时，A 的占比应显著高于 B（宽松区间：>55%）。
+	if na <= nb {
+		t.Errorf("高权重渠道 A 应显著多于 B（A=%d B=%d）", na, nb)
+	}
+	if na < total/2 {
+		t.Errorf("A 占比应过半，got %d/%d", na, total)
+	}
+}
+
 // round_robin 策略：多请求轮换渠道。
 func TestChatRoundRobin(t *testing.T) {
 	st, rt := newTestEnv(t, "round_robin")

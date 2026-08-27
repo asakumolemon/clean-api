@@ -19,6 +19,7 @@ type logView struct {
 	store.RequestLog
 	ChannelName string
 	StatusText  string
+	TTFBText    string // TTFB 展示文本（成功流式显示毫秒，其余 —）
 }
 
 // tokenLogOption 日志筛选用令牌选项。
@@ -113,7 +114,8 @@ func (s *Server) logsPage(w http.ResponseWriter, r *http.Request) {
 		views = append(views, logView{
 			RequestLog:  l,
 			ChannelName: chNames[l.ChannelID],
-			StatusText:  statusLabel(l.Status),
+			StatusText:  statusLabel(l),
+			TTFBText:    ttfbLabel(l),
 		})
 	}
 
@@ -139,8 +141,12 @@ func (s *Server) logsPage(w http.ResponseWriter, r *http.Request) {
 	}))
 }
 
-// statusLabel 状态码归类标签。
-func statusLabel(status int) string {
+// statusLabel 状态码归类标签。流式中断（status 0 且已开始输出）显示中断标记。
+func statusLabel(l store.RequestLog) string {
+	status := l.Status
+	if status == 0 && l.Streaming {
+		return "流中断"
+	}
 	switch {
 	case status >= 200 && status < 300:
 		return strconv.Itoa(status) + " 成功"
@@ -153,4 +159,12 @@ func statusLabel(status int) string {
 	default:
 		return strconv.Itoa(status)
 	}
+}
+
+// ttfbLabel TTFB 展示：成功流式且已记录首 token 延迟才显示毫秒数，其余 —。
+func ttfbLabel(l store.RequestLog) string {
+	if l.Streaming && l.TTFBMS > 0 {
+		return strconv.FormatInt(l.TTFBMS, 10) + "ms"
+	}
+	return "—"
 }

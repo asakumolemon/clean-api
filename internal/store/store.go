@@ -99,9 +99,12 @@ func (s *Store) migrate() error {
 			channel_id INTEGER,
 			status INTEGER,
 			latency_ms INTEGER,
+			ttfb_ms INTEGER DEFAULT 0,
 			prompt_tokens INTEGER,
 				completion_tokens INTEGER,
 				cache_hit INTEGER DEFAULT 0,
+				streaming INTEGER DEFAULT 0,
+				interrupted INTEGER DEFAULT 0,
 				token_name TEXT,
 				token_group TEXT,
 				error TEXT
@@ -124,6 +127,15 @@ func (s *Store) migrate() error {
 		return err
 	}
 	if err := s.ensureColumn("request_logs", "token_group", "token_group TEXT"); err != nil {
+		return err
+	}
+	if err := s.ensureColumn("request_logs", "ttfb_ms", "ttfb_ms INTEGER DEFAULT 0"); err != nil {
+		return err
+	}
+	if err := s.ensureColumn("request_logs", "streaming", "streaming INTEGER DEFAULT 0"); err != nil {
+		return err
+	}
+	if err := s.ensureColumn("request_logs", "interrupted", "interrupted INTEGER DEFAULT 0"); err != nil {
 		return err
 	}
 	if err := s.ensureColumn("tokens", "group", "`group` TEXT DEFAULT ''"); err != nil {

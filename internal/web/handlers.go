@@ -91,7 +91,8 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 		views = append(views, logView{
 			RequestLog:  l,
 			ChannelName: chNames[l.ChannelID],
-			StatusText:  statusLabel(l.Status),
+			StatusText:  statusLabel(l),
+			TTFBText:    ttfbLabel(l),
 		})
 	}
 	s.render(w, r, "dashboard.html", baseData("仪表盘 · 智能 API 网关", "dashboard", map[string]any{

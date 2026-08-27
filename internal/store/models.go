@@ -230,6 +230,7 @@ type ModelRoute struct {
 	ChannelType     string // openai | anthropic | responses | 厂商类型
 	BaseURL         string
 	BalanceStrategy string       // random | round_robin（渠道内 key 轮换策略）
+	Weight          int          // 渠道权重（random 策略加权抽样用）
 	Caps            Capabilities // 模型能力（system 折叠用）
 }
 
@@ -238,7 +239,7 @@ type ModelRoute struct {
 // alias 为空的模型不会在按别名搜索时误命中。
 func (s *Store) ListChannelsByModel(ctx context.Context, name string) ([]ModelRoute, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT m.name, c.id, c.type, c.base_url, c.balance_strategy, COALESCE(m.capabilities,'')
+		SELECT m.name, c.id, c.type, c.base_url, c.balance_strategy, c.weight, COALESCE(m.capabilities,'')
 		FROM models m JOIN channels c ON c.id = m.channel_id
 		WHERE (m.name = ? OR (m.alias IS NOT NULL AND m.alias != '' AND m.alias = ?))
 		  AND m.enabled = 1 AND c.status = 'active'
@@ -251,7 +252,7 @@ func (s *Store) ListChannelsByModel(ctx context.Context, name string) ([]ModelRo
 	for rows.Next() {
 		var r ModelRoute
 		var caps string
-		if err := rows.Scan(&r.ModelName, &r.ChannelID, &r.ChannelType, &r.BaseURL, &r.BalanceStrategy, &caps); err != nil {
+		if err := rows.Scan(&r.ModelName, &r.ChannelID, &r.ChannelType, &r.BaseURL, &r.BalanceStrategy, &r.Weight, &caps); err != nil {
 			return nil, err
 		}
 		if caps != "" {
