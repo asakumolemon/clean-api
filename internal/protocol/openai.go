@@ -413,7 +413,8 @@ type openaiStreamChunk struct {
 	Choices []struct {
 		Index        int `json:"index"`
 		Delta        struct {
-			Content   string `json:"content"`
+			Content           string `json:"content"`
+			ReasoningContent  string `json:"reasoning_content"`
 			ToolCalls []struct {
 				Index    int    `json:"index"`
 				ID       string `json:"id"`
@@ -462,6 +463,9 @@ func (p *OpenAIStreamParser) Feed(data string) ([]StreamEvent, error) {
 		if c.Delta.Content != "" {
 			evs = append(evs, StreamEvent{Type: EventTextDelta, Delta: c.Delta.Content})
 		}
+		if c.Delta.ReasoningContent != "" {
+			evs = append(evs, StreamEvent{Type: EventReasoningDelta, Delta: c.Delta.ReasoningContent})
+		}
 		for _, tc := range c.Delta.ToolCalls {
 			if !p.toolStarted[tc.Index] {
 				p.toolStarted[tc.Index] = true
@@ -503,6 +507,12 @@ func (sw *OpenAIChatStreamWriter) WriteEvent(ev StreamEvent) error {
 		err = sw.writeChunk(map[string]any{
 			"choices": []any{map[string]any{
 				"index": 0, "delta": map[string]any{"content": ev.Delta}, "finish_reason": nil,
+			}},
+		})
+	case EventReasoningDelta:
+		err = sw.writeChunk(map[string]any{
+			"choices": []any{map[string]any{
+				"index": 0, "delta": map[string]any{"reasoning_content": ev.Delta}, "finish_reason": nil,
 			}},
 		})
 	case EventToolCallStart:

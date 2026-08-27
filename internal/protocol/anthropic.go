@@ -340,6 +340,18 @@ func (aw *AnthropicStreamWriter) WriteEvent(ev StreamEvent) error {
 		if err != nil {
 			return err
 		}
+	case EventReasoningDelta:
+		// Anthropic 思考内容：映射为 thinking_delta（上游为 Anthropic 生态时透传思考过程）
+		if err := aw.ensureTextBlock(); err != nil {
+			return err
+		}
+		err := aw.writeEvent(map[string]any{
+			"type": "content_block_delta", "index": aw.textBlock,
+			"delta": map[string]any{"type": "thinking_delta", "thinking": ev.Delta},
+		})
+		if err != nil {
+			return err
+		}
 	case EventToolCallStart:
 		if aw.textBlock >= 0 {
 			// 内容块必须顺序出现：开新工具块前先关闭打开的文本块

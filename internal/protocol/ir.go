@@ -80,11 +80,12 @@ type Usage struct {
 
 // 流式事件类型。
 const (
-	EventTextDelta     = "text_delta"     // Delta 携带文本增量
-	EventToolCallStart = "tool_call_start" // ToolCall 携带新工具调用（Index/ID/Name）
-	EventToolCallDelta = "tool_call_delta" // ToolCall.Arguments 携带参数增量
-	EventToolCallStop  = "tool_call_stop"  // 工具调用结束
-	EventDone          = "done"            // 流结束：FinishReason/Usage 可能为空
+	EventTextDelta       = "text_delta"        // Delta 携带文本增量
+	EventReasoningDelta  = "reasoning_delta"   // Delta 携带思考增量（DeepSeek reasoning_content 等）
+	EventToolCallStart   = "tool_call_start"   // ToolCall 携带新工具调用（Index/ID/Name）
+	EventToolCallDelta   = "tool_call_delta"   // ToolCall.Arguments 携带参数增量
+	EventToolCallStop    = "tool_call_stop"    // 工具调用结束
+	EventDone            = "done"              // 流结束：FinishReason/Usage 可能为空
 )
 
 // StreamEvent 统一流式事件（M4 起使用）：上游 SSE 解析为事件流，再翻译成各协议 SSE。

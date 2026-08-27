@@ -313,6 +313,14 @@ func (rw *ResponsesStreamWriter) WriteEvent(ev StreamEvent) error {
 		}); err != nil {
 			return err
 		}
+	case EventReasoningDelta:
+		// Responses 思考内容：映射为 reasoning.summary_text.delta
+		if err := rw.write(map[string]any{
+			"type": "response.reasoning_summary_text.delta", "item_id": "reasoning",
+			"output_index": 0, "summary_index": 0, "delta": ev.Delta,
+		}); err != nil {
+			return err
+		}
 	case EventToolCallStart:
 		rw.itemSeq++
 		idx := rw.itemSeq - 1
